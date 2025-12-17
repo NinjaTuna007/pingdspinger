@@ -1,0 +1,12 @@
+# network_dump folder and everything in it
+network_dump/
+
+# bags folder and everything in it
+bags/
+
+# pointclouds folder and everything in it
+pointclouds/
+
+
+# vscode workspace files
+*.code-workspace

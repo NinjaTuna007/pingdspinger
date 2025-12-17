@@ -1,0 +1,20 @@
+tdss_driver:
+  ros__parameters:
+    # Network configuration
+    sonar_host: '127.0.0.1'  # Use localhost for pcap replay testing
+    # sonar_host: '192.168.228.50'  # Uncomment for real sonar device
+    sonar_port: 23848
+    reconnect_delay: 5.0
+    
+    # Frame IDs
+    frame_id: 'sonar'
+    odom_frame_id: 'odom'
+    map_frame_id: 'map'
+    
+    # Sonar geometry
+    transducer_tilt_deg: -20.0  # Downward tilt angle of transducer
+    
+    # Publishing options
+    publish_sidescan: true
+    waterfall_max_height: 1000  # Number of pings to keep in waterfall buffer
+    waterfall_target_width: 2000  # Target width in pixels (will downsample if needed)

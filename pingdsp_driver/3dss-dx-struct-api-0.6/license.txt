@@ -1,0 +1,25 @@
+****************  PROPRIETARY AND CONFIDENTIAL *******************************
+***   THE INFORMATION CONTAINED IN THESE FILES IS THE SOLE PROPERTY OF     ***
+***   PING DSP INC.  ANY REPRODUCTION OR DISTRIBUTION IN PART OR AS A      ***
+***   WHOLE WITHOUT THE WRITTEN PERMISSION OF PING DSP INC IS PROHIBITED.  ***
+******************************************************************************
+
+LICENSE
+=============================================================================
+
+Copyright (c) 2013, Ping Dsp Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this source code directly from Ping DSP Inc, to use and/or modify the 
+source code with restrictions.  You may use, copy, modify, and merge
+without limitation.  You may distribute and/or publish the source code only
+within your organization. You may not distribute and/or publish the source
+code outisde of your organization.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
