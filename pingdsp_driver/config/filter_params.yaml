@@ -1,0 +1,26 @@
+pointcloud_filter:
+  ros__parameters:
+    # Enable/disable all filtering (bypass mode)
+    enable_filtering: true
+    
+    # Range filtering (removes spurious detections)
+    min_range: 0.5    # Minimum range in meters (remove points too close to sensor)
+    max_range: 100.0  # Maximum range in meters (remove points beyond valid range)
+    
+    # Intensity filtering (0.0-1.0, normalized)
+    enable_intensity_filter: true
+    min_intensity: 0.1  # Remove weak returns (likely noise/multipath)
+    
+    # Altitude filtering (meters, relative to sonar frame)
+    enable_altitude_filter: true
+    min_altitude: -50.0  # Maximum depth below sonar
+    max_altitude: 5.0    # Maximum height above sonar (water surface)
+    
+    # Consecutive point filtering (along scan line)
+    enable_consecutive_filter: true
+    max_consecutive_jump: 10.0  # Max distance jump between consecutive points (meters)
+    
+    # Topic names
+    input_topic: 'sonar/bathymetry'
+    output_topic: 'sonar/bathymetry_filtered'
+

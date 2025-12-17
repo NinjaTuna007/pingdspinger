@@ -1,0 +1,53 @@
+# Detailed sonar settings for a ping
+
+# Range setting
+float32 range
+
+# Sound velocity
+float32 sound_velocity_bulk
+float32 sound_velocity_face
+
+# Port gain settings
+float32 port_gain_constant
+float32 port_gain_linear
+float32 port_gain_logarithmic
+
+# Starboard gain settings
+float32 starboard_gain_constant
+float32 starboard_gain_linear
+float32 starboard_gain_logarithmic
+
+# Transmit settings
+float32 port_transmit_angle
+uint32 port_transmit_power
+string port_transmit_beamwidth
+string port_transmit_pulse
+
+float32 starboard_transmit_angle
+uint32 starboard_transmit_power
+string starboard_transmit_beamwidth
+string starboard_transmit_pulse
+
+# Trigger settings
+string trigger_source
+float32 trigger_continuous_duty_cycle
+
+# Sidescan settings
+string port_sidescan_mode
+string port_sidescan_incoherent_method
+string port_sidescan_coherent_beams
+
+string starboard_sidescan_mode
+string starboard_sidescan_incoherent_method
+string starboard_sidescan_coherent_beams
+
+# Sidescan3D settings
+int32 port_sidescan3d_smoothing
+float32 port_sidescan3d_tolerance
+float32 port_sidescan3d_threshold
+int32 port_sidescan3d_number_of_angles
+
+int32 starboard_sidescan3d_smoothing
+float32 starboard_sidescan3d_tolerance
+float32 starboard_sidescan3d_threshold
+int32 starboard_sidescan3d_number_of_angles

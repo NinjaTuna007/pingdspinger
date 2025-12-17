@@ -1,0 +1,2 @@
+network_dump_dir: '/home/shekharu/colcon_ws/src/my_pkgs/pingdspinger/network_dump'
+bag_dir: '/home/shekharu/colcon_ws/src/my_pkgs/pingdspinger/bags'

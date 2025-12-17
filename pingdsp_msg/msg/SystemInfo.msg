@@ -1,0 +1,15 @@
+# 3DSS-DX sonar system information
+
+string sonar_id
+float32 acoustic_frequency
+float32 sample_rate
+float32 maximum_ping_rate
+
+float32 port_sidescan_range_resolution
+float32 starboard_sidescan_range_resolution
+
+float32 port_sidescan3d_range_resolution
+float32 starboard_sidescan3d_range_resolution
+
+float32 port_transducer_angle
+float32 starboard_transducer_angle

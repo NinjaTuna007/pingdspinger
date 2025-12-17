@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Arguments -->
+    <arg name="config_file" default="$(find-pkg-share pingdsp_driver)/config/3dss_params.yaml" 
+         description="Path to parameter YAML file"/>
+    <arg name="filter_config" default="$(find-pkg-share pingdsp_driver)/config/filter_params.yaml" 
+         description="Path to filter parameter YAML file"/>
+    <arg name="recorder_config" default="$(find-pkg-share pingdsp_driver)/config/recorder_params.yaml" 
+         description="Path to recorder parameter YAML file"/>
+    <arg name="enable_filter" default="true" 
+         description="Enable point cloud filtering"/>
+    <arg name="enable_recorder" default="false" 
+         description="Enable point cloud recording"/>
+    <arg name="record_bag" default="false" 
+         description="Enable ROS 2 bag recording of all topics"/>
+    
+    <!-- 3DSS-DX Driver Node -->
+    <node pkg="pingdsp_driver" exec="tdss_driver" name="tdss_driver" output="screen">
+        <param from="$(var config_file)"/>
+    </node>
+    
+    <!-- Point Cloud Filter Node (optional) -->
+    <node pkg="pingdsp_driver" exec="pointcloud_filter" name="pointcloud_filter" output="screen" if="$(var enable_filter)">
+        <param from="$(var filter_config)"/>
+    </node>
+    
+    <!-- Point Cloud Recorder Node (optional) -->
+    <node pkg="pingdsp_driver" exec="pointcloud_recorder" name="pointcloud_recorder" output="screen" if="$(var enable_recorder)">
+        <param from="$(var recorder_config)"/>
+    </node>
+    
+    <!-- ROS 2 Bag Recorder (optional) -->
+    <executable cmd="ros2 bag record -a" output="screen" if="$(var record_bag)" cwd="$(find-pkg-share pingdsp_driver)/../../../bags"/>
+</launch>

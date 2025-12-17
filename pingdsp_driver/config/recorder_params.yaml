@@ -1,0 +1,11 @@
+pointcloud_recorder:
+  ros__parameters:
+    # Output settings
+    output_dir: '/home/shekharu/colcon_ws/src/my_pkgs/pingdspinger/pointclouds'
+    output_filename: ''  # Auto-generate timestamp-based filename if empty
+    
+    # Input topic (use filtered or raw)
+    input_topic: 'sonar/bathymetry_filtered'  # Or 'sonar/bathymetry' for raw
+    
+    # Frame to record points in
+    frame_id: 'odom'
