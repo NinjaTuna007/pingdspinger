@@ -242,6 +242,15 @@ Apache-2.0
 ## Author
 
 ROS 2 implementation based on PingDSP C++ API documentation and reverse-engineered TCP protocol.
+# 3dss-dx-struct-api-0.6 Directory
+
+This package includes a `3dss-dx-struct-api-0.6/` directory, which contains the official C++ API header and documentation from PingDSP for the 3DSS-DX sonar:
+
+- **pingdsp-3dss.hpp**: C++ header file defining the binary data structures and protocol for the 3DSS-DX sonar. Used as the reference for all binary parsing in this driver.
+- **3dss-dx-struct-api.chm**: Compiled HTML documentation for the C++ API, describing the data structures and protocol in detail.
+- **license.txt**: License file for the C++ API (see file for terms; not the same as this ROS package's license).
+
+**Note:** The Python driver in this package is based on the structures and protocol defined in `pingdsp-3dss.hpp`. The C++ files are provided for reference and compatibility only; no C++ code is compiled or linked in this ROS 2 package.
 # Verify pcap file has TCP data on expected port
 tshark -r network_dump/pingDSP_traffic.pcap -Y "tcp.srcport == 23848" | head
 
