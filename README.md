@@ -1,15 +1,18 @@
 
 
-# pingdspinger Workspace
 
-This workspace contains ROS 2 packages and resources for working with the PingDSP 3DSS-DX sonar, including drivers, message definitions, and example data.
+# pingdspinger: ROS 2 Driver & Tools for PingDSP 3DSS-DX Sonar
 
-## Structure
+This repository provides ROS 2 packages, drivers, message definitions, and example data for the PingDSP 3DSS-DX sonar. It enables TCP streaming, replay from PCAP, and integration with ROS 2 workflows.
+
+
+## Repository Structure
 
 - `pingdsp_driver/` — Main ROS 2 driver for PingDSP 3DSS-DX sonar (TCP streaming)
 - `pingdsp_msg/` — Custom ROS 2 message definitions for PingDSP data
-- `bags/` — Example MCAP/ROS2 bag files for replay and testing
-- `network_dump/` — Example PCAP files for replay and testing
+- `bags/` — Example MCAP/ROS 2 bag files for replay/testing
+- `network_dump/` — Example PCAP files for replay/testing
+
 
 ## Quick Start
 
@@ -18,19 +21,22 @@ colcon build
 source install/setup.bash
 ```
 
-### Run the driver with PCAP replay
+
+### Run the Driver with PCAP Replay
 
 ```bash
 ros2 launch pingdsp_driver test_driver.launch.py
 ```
 
-### Run with live sonar
+
+### Run with Live Sonar
 
 Edit `config/3dss_params.yaml` to set your sonar's IP address, then:
 
 ```bash
 ros2 launch pingdsp_driver 3dss.launch
 ```
+
 
 ## Usage
 
@@ -61,6 +67,7 @@ ros2 launch pingdsp_driver 3dss.launch
 ros2 launch pingdsp_driver 3dss.launch config_file:=/path/to/custom_params.yaml
 ```
 
+
 ## Directory Layout
 
 ```text
@@ -71,9 +78,10 @@ pingdspinger/
 ├── network_dump/           # Example PCAP files
 ```
 
+
 ## Troubleshooting
 
-### Cannot connect to sonar
+### Cannot Connect to Sonar
 
 ```bash
 ping 192.168.1.100
@@ -81,13 +89,13 @@ nc -zv 192.168.1.100 14001
 ros2 param get /tdss_driver sonar_host
 ```
 
-### No data published
+### No Data Published
 
-- Check that sonar is transmitting (verify with manufacturer's software)
+- Ensure the sonar is transmitting (check with manufacturer software)
 - Monitor status topic: `ros2 topic echo /sonar/status`
 - Check node logs: `ros2 node info /tdss_driver`
 
-### PCAP replay not working
+### PCAP Replay Not Working
 
 - Ensure the PCAP file contains TCP data on the expected port (default: 23848):
    ```bash
@@ -97,6 +105,7 @@ ros2 param get /tdss_driver sonar_host
    ```bash
    netstat -tuln | grep 23848
    ```
+
 
 ## License
 
