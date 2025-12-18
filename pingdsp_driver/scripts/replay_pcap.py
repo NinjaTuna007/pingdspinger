@@ -49,8 +49,14 @@ def stream_tcp_packets(pcap_file, src_port):
             
             timestamp = float(parts[0])
             hex_data = parts[1]
-            payload = bytes.fromhex(hex_data.replace(':', ''))
-            
+            # Skip if hex_data is empty or contains non-hex characters
+            if not hex_data:
+                continue
+            try:
+                payload = bytes.fromhex(hex_data.replace(':', ''))
+            except ValueError:
+                print(f"Warning: Skipping invalid hex data at packet {packet_count+1}")
+                continue
             packet_count += 1
             yield (payload, timestamp)
         

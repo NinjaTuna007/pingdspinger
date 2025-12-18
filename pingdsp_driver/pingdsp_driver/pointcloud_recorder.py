@@ -28,7 +28,7 @@ class PointCloudRecorder(Node):
         # Declare parameters
         self.declare_parameter('output_dir', os.path.expanduser('~/sonar_data'))
         self.declare_parameter('output_filename', '')  # Auto-generate if empty
-        self.declare_parameter('frame_id', 'odom')  # Frame to save points in
+        self.declare_parameter('frame_id', 'map')  # Frame to save points in
         self.declare_parameter('input_topic', 'sonar/bathymetry_filtered')  # Subscribe to filtered by default
         
         # Get parameters
