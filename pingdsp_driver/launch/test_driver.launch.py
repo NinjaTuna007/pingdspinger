@@ -102,7 +102,7 @@ def generate_launch_description():
         if pcap_file_arg_val and pcap_file_arg_val != '':
             pcap_file = pcap_file_arg_val
         else:
-            pcap_file = os.path.join(network_dump_dir, 'asko_survey_bigrange.pcap')
+            pcap_file = os.path.join(network_dump_dir, 'asko_survey.pcap')
         print(f"[LAUNCH DEBUG] Using pcap_file: {pcap_file}")
         bag_name_arg_val = LaunchConfiguration('bag_name').perform(context)
         bag_name = bag_name_arg_val if bag_name_arg_val else os.path.splitext(os.path.basename(pcap_file))[0]

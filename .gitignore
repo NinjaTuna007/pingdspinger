@@ -7,6 +7,9 @@ bags/
 # pointclouds folder and everything in it
 pointclouds/
 
+#pycache stuff in any sub-directory
+**/__pycache__/
+
 
 # vscode workspace files
 *.code-workspace
