@@ -3,12 +3,12 @@
 
 # pingdspinger: ROS 2 Driver & Tools for PingDSP 3D Sidescan Sonar
 
-This repository provides ROS 2 packages, drivers, message definitions, and example data for the PingDSP 3DSS-DX sonar. It enables TCP streaming, replay from PCAP, and integration with ROS 2 workflows.
+This repository provides ROS 2 packages, drivers, message definitions, and example data for the PingDSP 3D Sidescan sonar. It enables TCP streaming, replay from PCAP, and integration with ROS 2 workflows.
 
 
 ## Repository Structure
 
-- `pingdsp_driver/` — Main ROS 2 driver for PingDSP 3DSS-DX sonar (TCP streaming)
+- `pingdsp_driver/` — Main ROS 2 driver for PingDSP 3D Sidescan sonar (TCP streaming)
 - `pingdsp_msg/` — Custom ROS 2 message definitions for PingDSP data
 - `bags/` — Example MCAP/ROS 2 bag files for replay/testing
 - `network_dump/` — Example PCAP files for replay/testing
