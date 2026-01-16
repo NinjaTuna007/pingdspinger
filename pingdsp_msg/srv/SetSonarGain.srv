@@ -1,0 +1,8 @@
+# Set the sonar gain parameters (TVG - Time Varied Gain)
+string side  # "port" or "starboard"
+float32 constant  # Constant gain component
+float32 linear    # Linear gain component
+float32 logarithmic  # Logarithmic gain component
+---
+bool success
+string message

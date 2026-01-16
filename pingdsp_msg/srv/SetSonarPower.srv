@@ -1,0 +1,6 @@
+# Set the sonar transmit power
+string side  # "port" or "starboard"
+uint32 power  # Power level (0-100 or device-specific range)
+---
+bool success
+string message

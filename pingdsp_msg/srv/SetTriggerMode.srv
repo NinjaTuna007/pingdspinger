@@ -1,0 +1,6 @@
+# Set the sonar trigger mode
+string trigger_source  # "external" or "continuous"
+float32 duty_cycle  # For continuous mode, duty cycle value
+---
+bool success
+string message

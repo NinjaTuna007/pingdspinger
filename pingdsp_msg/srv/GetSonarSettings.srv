@@ -1,0 +1,5 @@
+# Get current sonar settings
+---
+bool success
+SonarSettings settings  # Current sonar configuration
+string message

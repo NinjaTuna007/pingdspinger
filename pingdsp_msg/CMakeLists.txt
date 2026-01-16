@@ -11,11 +11,17 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 
-# Generate custom messages
+# Generate custom messages and services
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Ping3DSS.msg"
   "msg/SonarSettings.msg"
   "msg/SystemInfo.msg"
+  "srv/SetSonarRange.srv"
+  "srv/SetSonarGain.srv"
+  "srv/SetSonarPower.srv"
+  "srv/SetSoundVelocity.srv"
+  "srv/GetSonarSettings.srv"
+  "srv/SetTriggerMode.srv"
   DEPENDENCIES sensor_msgs std_msgs
 )
 

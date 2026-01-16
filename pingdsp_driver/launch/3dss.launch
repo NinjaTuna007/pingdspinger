@@ -7,10 +7,14 @@
          description="Path to filter parameter YAML file"/>
     <arg name="recorder_config" default="$(find-pkg-share pingdsp_driver)/config/recorder_params.yaml" 
          description="Path to recorder parameter YAML file"/>
+    <arg name="control_config" default="$(find-pkg-share pingdsp_driver)/config/control_params.yaml" 
+         description="Path to control parameter YAML file"/>
     <arg name="enable_filter" default="true" 
          description="Enable point cloud filtering"/>
     <arg name="enable_recorder" default="false" 
          description="Enable point cloud recording"/>
+    <arg name="enable_control" default="true" 
+         description="Enable sonar control interface"/>
     <arg name="record_bag" default="false" 
          description="Enable ROS 2 bag recording of all topics"/>
     
@@ -27,6 +31,11 @@
     <!-- Point Cloud Recorder Node (optional) -->
     <node pkg="pingdsp_driver" exec="pointcloud_recorder" name="pointcloud_recorder" output="screen" if="$(var enable_recorder)">
         <param from="$(var recorder_config)"/>
+    </node>
+    
+    <!-- Sonar from="$(var control_config)
+        <param name="timeout" value="5.0"/>
+        <param name="reconnect_on_disconnect" value="true"/>
     </node>
     
     <!-- ROS 2 Bag Recorder (optional) -->

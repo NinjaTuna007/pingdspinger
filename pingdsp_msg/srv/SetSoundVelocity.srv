@@ -1,0 +1,5 @@
+# Set the sound velocity for range calculations
+float32 sound_velocity  # Sound velocity in m/s (typically 1450-1550)
+---
+bool success
+string message
