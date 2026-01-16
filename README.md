@@ -9,7 +9,8 @@ This repository provides ROS 2 packages, drivers, message definitions, and examp
 ## Repository Structure
 
 - `pingdsp_driver/` — Main ROS 2 driver for PingDSP 3D Sidescan sonar (TCP streaming)
-- `pingdsp_msg/` — Custom ROS 2 message definitions for PingDSP data
+  - **Sonar Control Interface** — ROS 2 services for dynamic sonar configuration (NEW!)
+- `pingdsp_msg/` — Custom ROS 2 message definitions and service definitions
 - `bags/` — Example MCAP/ROS 2 bag files for replay/testing
 - `network_dump/` — Example PCAP files for replay/testing
 
@@ -36,6 +37,26 @@ Edit `config/3dss_params.yaml` to set your sonar's IP address, then:
 ```bash
 ros2 launch pingdsp_driver 3dss.launch
 ```
+
+## Sonar Control
+
+**NEW!** Dynamic sonar configuration via ROS 2 services.
+
+Control sonar settings (range, gain, power, etc.) programmatically:
+
+```bash
+# Set range to 75 meters
+ros2 service call /sonar/set_range pingdsp_msg/srv/SetSonarRange "{range: 75.0}"
+
+# Adjust port gain
+ros2 service call /sonar/set_gain pingdsp_msg/srv/SetSonarGain \
+  "{side: 'port', constant: 10.0, linear: 0.5, logarithmic: 20.0}"
+
+# Run example control script
+python3 pingdsp_driver/scripts/example_sonar_control.py
+```
+
+**📖 Full documentation:** [`pingdsp_driver/SONAR_CONTROL.md`](pingdsp_driver/SONAR_CONTROL.md)
 
 
 ## Usage

@@ -32,6 +32,7 @@ setup(
             'tdss_driver = pingdsp_driver.tdss_driver:main',
             'pointcloud_filter = pingdsp_driver.pointcloud_filter:main',
             'pointcloud_recorder = pingdsp_driver.pointcloud_recorder:main',
+            'sonar_control_node = pingdsp_driver.sonar_control_node:main',
         ],
     },
 )
