@@ -34,7 +34,7 @@ class SonarControlNode(Node):
         
         # Declare parameters
         self.declare_parameter('sonar_host', '192.168.1.100')
-        self.declare_parameter('control_port', 50001)  # Default control port (verify with manual)
+        self.declare_parameter('control_port', 23840)  # Control port for PingDSP 3DSS-DX
         self.declare_parameter('timeout', 5.0)
         self.declare_parameter('reconnect_on_disconnect', True)
         

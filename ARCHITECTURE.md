@@ -8,7 +8,7 @@
 │                                                                     │
 │  ┌──────────────────────┐        ┌──────────────────────┐          │
 │  │  Data Stream Port    │        │  Control Port        │          │
-│  │  (TCP 14001)         │        │  (TCP 50001*)        │          │
+│  │  (TCP 14001)         │        │  (TCP 23840)         │          │
 │  └──────────┬───────────┘        └──────────┬───────────┘          │
 └─────────────┼────────────────────────────────┼──────────────────────┘
               │                                │
@@ -47,7 +47,8 @@
               │  • Scripts              │
               └─────────────────────────┘
 
-* Control port 50001 is default - verify with your hardware manual
+* Data port 14001 is for binary ping data stream (DxData protocol)
+* Control port 23840 is for ASCII command interface
 ```
 
 ## Data Flow
@@ -74,7 +75,7 @@ User/Script
             │
             └─► sonar_control_node
                     │
-                    ├─► [TCP 50001] ASCII: "SET RANGE 50"
+                    ├─► [TCP 23840] ASCII: "SET RANGE 50"
                     │
                     └─► Sonar Hardware
                             │
