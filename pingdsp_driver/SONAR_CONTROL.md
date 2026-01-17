@@ -12,7 +12,7 @@ The sonar control system provides ROS 2 services to dynamically adjust sonar par
 ┌─────────────────────────────────────────────────┐
 │  sonar_control_node                             │
 │  ┌──────────────────────────────────────────┐  │
-│  │  TCP Control Connection (port 50001)     │  │
+│  │  TCP Control Connection (port 23840)     │  │
 │  │  - Send ASCII commands                   │  │
 │  │  - Parse responses                       │  │
 │  └──────────────────────────────────────────┘  │
@@ -100,7 +100,7 @@ Edit [config/control_params.yaml](config/control_params.yaml):
 sonar_control_node:
   ros__parameters:
     sonar_host: '192.168.228.50'  # Sonar IP address
-    control_port: 50001            # Control port (verify with manual)
+    control_port: 23840            # Control port for PingDSP 3DSS-DX
     timeout: 5.0                   # Connection timeout
     reconnect_on_disconnect: true  # Auto-reconnect on connection loss
 ```
@@ -165,7 +165,7 @@ ros2 interface show pingdsp_msg/srv/SetSonarRange
 
 ### Connection Issues
 - Verify sonar IP address in `control_params.yaml`
-- Check control port (default 50001, verify with sonar manual)
+- Check control port (default 23840 for PingDSP 3DSS-DX)
 - Ensure control interface is enabled on sonar hardware
 - Check firewall settings
 
