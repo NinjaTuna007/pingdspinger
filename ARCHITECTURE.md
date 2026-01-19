@@ -6,10 +6,10 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        PingDSP 3DSS-DX Sonar                        │
 │                                                                     │
-│  ┌──────────────────────┐        ┌──────────────────────┐          │
-│  │  Data Stream Port    │        │  Control Port        │          │
-│  │  (TCP 14001)         │        │  (TCP 23840)         │          │
-│  └──────────┬───────────┘        └──────────┬───────────┘          │
+│  ┌──────────────────────┐        ┌──────────────────────┐           │
+│  │  Data Stream Port    │        │  Control Port        │           │
+│  │  (TCP 14001)         │        │  (TCP 23840)         │           │
+│  └──────────┬───────────┘        └──────────┬───────────┘           │
 └─────────────┼────────────────────────────────┼──────────────────────┘
               │                                │
               │ Binary data stream             │ ASCII commands
@@ -20,7 +20,7 @@
 │  (Existing)                  │  │                                  │
 │                              │  │  ROS 2 Services:                 │
 │  Publishers:                 │  │  ┌────────────────────────────┐  │
-│  • /sonar/bathymetry        │  │  │ /sonar/set_range           │  │
+│  • /sonar/bathymetry         │  │  │ /sonar/set_range           │  │
 │    (PointCloud2)             │  │  │ /sonar/set_gain            │  │
 │  • /sonar/ping               │  │  │ /sonar/set_power           │  │
 │    (Ping3DSS)                │  │  │ /sonar/set_sound_velocity  │  │

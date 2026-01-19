@@ -33,9 +33,9 @@
         <param from="$(var recorder_config)"/>
     </node>
     
-    <!-- Sonar from="$(var control_config)
-        <param name="timeout" value="5.0"/>
-        <param name="reconnect_on_disconnect" value="true"/>
+    <!-- Sonar Control Node (optional) -->
+    <node pkg="pingdsp_driver" exec="sonar_control_node" name="sonar_control_node" output="screen" if="$(var enable_control)">
+        <param from="$(var control_config)"/>
     </node>
     
     <!-- ROS 2 Bag Recorder (optional) -->
