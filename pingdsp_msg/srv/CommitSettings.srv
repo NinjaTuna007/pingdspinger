@@ -1,0 +1,7 @@
+# Service for committing changes to sonar or file processor parameters
+# Based on 3DSS-DX Control Command Interface Guide Section 3.9
+
+# No request fields needed
+---
+bool success
+string message

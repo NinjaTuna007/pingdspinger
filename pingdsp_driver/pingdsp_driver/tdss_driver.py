@@ -20,7 +20,7 @@ from nav_msgs.msg import Path
 from std_msgs.msg import Header, String
 from tf2_ros import TransformBroadcaster
 
-from pingdsp_msg.msg import Ping3DSS, SonarSettings, SystemInfo
+from pingdsp_msg.msg import Ping3DSS, SystemInfo
 
 import numpy as np
 import logging

@@ -1,0 +1,19 @@
+# Service for getting/setting bathymetry settings
+# Based on 3DSS-DX Control Command Interface Guide Section 3.6
+
+string command           # "get" or "set"
+float32 mindepth        # Point rejection minimum depth, limit -1 to 200
+float32 maxdepth        # Point rejection maximum depth, limit 0 to 200
+float32 swath           # Swath rejection, limit 0 to 20
+string binning_mode     # "equidistant"
+int32 binning_count     # Bin count, limit 3 to 1440
+float32 binning_width   # Bin width, limit 0.05 to 2.00
+string bottomtrack_mode # "cartesian"
+int32 bottomtrack_cells # Number of cells, limit 3 to 256
+float32 bottomtrack_width    # Cell width in meters, limit 0.1 to 10.0
+float32 bottomtrack_height   # Cell height in meters, limit 0.1 to 10.0
+int32 bottomtrack_heightp    # Cell height as percent of depth, limit 0 to 25
+float32 bottomtrack_alpha    # Alpha, limit 0.01 to 0.99
+---
+bool success
+string message

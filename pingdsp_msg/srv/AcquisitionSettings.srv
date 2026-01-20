@@ -1,0 +1,13 @@
+# Service for getting/setting acquisition parameters
+# Based on 3DSS-DX Control Command Interface Guide Section 3.8
+
+string command       # "get" or "set"
+int32 range         # Sonar range: 15, 20, 25, 50, 75, 100, 125, 150, 200, or 250
+int32 dutycycle     # Duty cycle: 1, 10, 25, 50, 75, or 100
+string trigger      # "continuous" or "external"
+float32 maxdepth    # Max sonar depth: 3, 5, 7.5, 10, 15, 25, 35, 50, 75
+string env          # "simple" or "complex"
+string priority     # "bathymetry", "widearea", or "highres"
+---
+bool success
+string message

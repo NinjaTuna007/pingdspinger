@@ -1,8 +1,8 @@
 sonar_control_node:
   ros__parameters:
     # Control interface connection
-    sonar_host: '127.0.0.1'  # Use localhost for testing, or set to sonar IP
-    # sonar_host: '192.168.228.50'  # Uncomment for real sonar device
+    # sonar_host: '127.0.0.1'  # Use localhost for testing, or set to sonar IP
+    sonar_host: '192.168.228.50'  # Uncomment for real sonar device
     control_port: 23840  # Control port (verified for PingDSP)
     timeout: 5.0
     reconnect_on_disconnect: true

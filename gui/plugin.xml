@@ -1,0 +1,3 @@
+<library path="src/rqt_sonar_control/sonar_control.py">
+  <class name="SonarControlPlugin" type="rqt_gui_py::Plugin" base_class_type="rqt_gui_py::Plugin"/>
+</library>
