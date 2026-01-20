@@ -1,0 +1,13 @@
+# Service for file playback/processing control
+# Based on 3DSS-DX Control Command Interface Guide Section 3.11
+
+string command   # "open", "close", "play", "stop", "status"
+string filename  # Complete path to file (for open command)
+float32 speed    # Playback speed: 0.125, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, or 20.0
+---
+bool success
+string message
+string file_name     # File name (for status)
+int64 file_size      # File size (for status)
+float32 ratehz       # Read rate in Hz (for status)
+float32 ratert       # Read rate as multiple of real-time (for status)

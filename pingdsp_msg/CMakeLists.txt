@@ -14,14 +14,19 @@ find_package(std_msgs REQUIRED)
 # Generate custom messages and services
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Ping3DSS.msg"
-  "msg/SonarSettings.msg"
   "msg/SystemInfo.msg"
-  "srv/SetSonarRange.srv"
-  "srv/SetSonarGain.srv"
-  "srv/SetSonarPower.srv"
-  "srv/SetSoundVelocity.srv"
-  "srv/GetSonarSettings.srv"
-  "srv/SetTriggerMode.srv"
+  "srv/AppControl.srv"
+  "srv/SidescanSettings.srv"
+  "srv/Sidescan3DSettings.srv"
+  "srv/BathymetrySettings.srv"
+  "srv/TransmitSettings.srv"
+  "srv/AcquisitionSettings.srv"
+  "srv/CommitSettings.srv"
+  "srv/SonarControl.srv"
+  "srv/FileControl.srv"
+  "srv/RecordControl.srv"
+  "srv/BaudSettings.srv"
+  "srv/SoundVelocity.srv"
   DEPENDENCIES sensor_msgs std_msgs
 )
 

@@ -1,0 +1,12 @@
+# Service for getting/setting sound velocity
+# Based on 3DSS-DX Control Command Interface Guide Section 3.2
+# Command: sv [--bulk=<value> | --face=<value>]
+
+string command          # "get" or "set"
+float32 bulk_velocity   # Bulk sound velocity in m/s (1300-2500), 0 = don't set
+float32 face_velocity   # Face sound velocity in m/s (1300-2500), 0 = don't set
+---
+bool success
+string message
+float32 current_bulk    # Current bulk sound velocity (for get command)
+float32 current_face    # Current face sound velocity (for get command)

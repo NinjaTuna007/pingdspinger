@@ -1,0 +1,11 @@
+# Service for controlling the sonar system
+# Based on 3DSS-DX Control Command Interface Guide Section 3.10
+
+string command  # "connect", "disconnect", "updatetime", "run", "stop", or "status"
+---
+bool success
+string message
+string sonar_id      # Sonar ID (for status)
+int32 pings          # Number of pings (for status)
+float32 ratehz       # Ping rate estimate (for status)
+string network_status # Network status (for status)

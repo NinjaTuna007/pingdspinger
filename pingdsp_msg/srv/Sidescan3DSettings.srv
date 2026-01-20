@@ -1,0 +1,16 @@
+# Service for getting/setting sidescan 3D settings
+# Based on 3DSS-DX Control Command Interface Guide Section 3.5
+
+string command        # "get" or "set"
+string side          # "port", "starboard", or "both"
+int32 angles         # Number of angles: 1, 2, 3, or 4
+int32 smoothing      # Smoothing: 0, 2, 3, 5, 10, 15, 20, 25, 30, 40, or 50
+float32 threshold    # Minimum energy threshold in dB, limit -150 to 0
+float32 tolerance    # Solution tolerance, limit 0.001 to 0.999
+float32 mindepth     # Minimum depth
+float32 maxdepth     # Maximum depth
+float32 swath        # Swath
+float32 amp          # Amplitude
+---
+bool success
+string message

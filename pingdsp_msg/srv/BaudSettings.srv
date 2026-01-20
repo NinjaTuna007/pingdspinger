@@ -1,0 +1,11 @@
+# Service for getting/setting baud rates
+# Based on 3DSS-DX Control Command Interface Guide Section 3.13
+
+string command    # "get" or "set"
+string device     # "gps" or "mru"
+int32 baudrate    # 9600, 19200, 38400, 57600, 115200, or 230400
+---
+bool success
+string message
+int32 gps_baud    # Current GPS baud rate (for get command)
+int32 mru_baud    # Current MRU baud rate (for get command)

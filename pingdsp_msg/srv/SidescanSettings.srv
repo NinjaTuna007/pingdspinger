@@ -1,0 +1,11 @@
+# Service for getting/setting sidescan settings
+# Based on 3DSS-DX Control Command Interface Guide Section 3.4
+
+string command        # "get" or "set"
+string side          # "port", "starboard", or "both"
+string mode          # "incoherent" or "coherent"
+string method        # "rms" or "max" (for incoherent mode)
+string beams         # 9-bit string (e.g., "000111110") for coherent mode
+---
+bool success
+string message

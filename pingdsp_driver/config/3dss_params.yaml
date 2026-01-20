@@ -1,8 +1,8 @@
 tdss_driver:
   ros__parameters:
     # Network configuration
-    sonar_host: '127.0.0.1'  # Use localhost for pcap replay testing
-    # sonar_host: '192.168.228.50'  # Uncomment for real sonar device
+    # sonar_host: '127.0.0.1'  # Use localhost for pcap replay testing
+    sonar_host: '192.168.228.50'  # Uncomment for real sonar device
     sonar_port: 23848
     reconnect_delay: 5.0
     

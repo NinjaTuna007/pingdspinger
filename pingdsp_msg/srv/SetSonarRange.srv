@@ -1,5 +1,0 @@
-# Set the sonar operating range in meters
-float32 range  # Range in meters (e.g., 10.0, 50.0, 100.0)
----
-bool success
-string message  # Error message if success is false

@@ -1,0 +1,9 @@
+# Service for controlling the application mode and initialization
+# Based on 3DSS-DX Control Command Interface Guide Section 3.3
+
+string command  # One of: "init", "mode", "exit", "status"
+string mode     # For mode command: "sonar", "fileprocess", or "fileplay"
+---
+bool success
+string message
+string current_mode  # Current application mode (returned for status queries)

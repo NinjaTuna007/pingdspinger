@@ -1,0 +1,12 @@
+# Service for getting/setting transmit settings
+# Based on 3DSS-DX Control Command Interface Guide Section 3.7
+
+string command       # "get" or "set"
+string side         # "port", "starboard", or "both"
+string pulse        # "none", "nb10", "nb15", "nb25", "nb50", "bb80", or "bb200"
+int32 power         # 1, 2, 5, 10, 20, 50, 80, or 100
+int32 beamwidth     # 19, 22, 30, 44, 55, or 90
+int32 angle         # -45, -30, -20, -15, -10, 0, 10, 15, 20, 30, or 45
+---
+bool success
+string message
