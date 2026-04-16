@@ -1,0 +1,120 @@
+/**:
+  ros__parameters:
+    # PingDSP Ellipse-E listen-only configuration over UDP port 24333.
+    # confWithRos is false so the driver will NOT push any settings to the device.
+
+    driver:
+      frequency: 400
+
+    odometry:
+      enable: false
+      publishTf: false
+      odomFrameId: "odom"
+      baseFrameId: "base_link"
+      initFrameId: "map"
+
+    confWithRos: false
+
+    # UDP configuration - listen on port 24333
+    ipConf:
+      ipAddress: "0.0.0.0"
+      out_port: 24333              # local port the driver listens on
+      in_port: 0                   # not sending to device
+
+    sensorParameters:
+      initLat: 48.419727
+      initLong: -4.472119
+      initAlt: 100.0
+      year: 2018
+      month: 03
+      day: 10
+      motionProfile: 1
+
+    imuAlignementLeverArm:
+      axisDirectionX: 0
+      axisDirectionY: 3
+      misRoll: 0.0
+      misPitch: 0.0
+      misYaw: 0.0
+      leverArmX: 0.0
+      leverArmY: 0.0
+      leverArmZ: 0.0
+
+    # AIDING_ASSIGNMENT (Ellipse-E: external GNSS on PORT_C)
+    aidingAssignment:
+      gnss1ModulePortAssignment: 2
+      gnss1ModuleSyncAssignment: 0
+      rtcmPortAssignment: 255
+      odometerPinAssignment: 0
+
+    magnetometer:
+      magnetometerModel: 201
+      magnetometerRejectMode: 1
+      calibration:
+        mode: 2
+        bandwidth: 2
+
+    # GNSS configuration (Ellipse-E: external NMEA GNSS, model 102)
+    gnss:
+      gnss_model_id: 102
+      primaryLeverArmX: 0.0
+      primaryLeverArmY: 0.0
+      primaryLeverArmZ: 0.0
+      primaryLeverPrecise: true
+      secondaryLeverArmX: 0.0
+      secondaryLeverArmY: 0.0
+      secondaryLeverArmZ: 0.0
+      secondaryLeverMode: 1
+      posRejectMode: 1
+      velRejectMode: 1
+      hdtRejectMode: 1
+
+    odom:
+      gain: 4800.0
+      gain_error: 0
+      direction: false
+      leverArmX: 0.0
+      leverArmY: 0.0
+      leverArmZ: 0.0
+      rejectMode: 1
+
+    # Output configuration (Ellipse-E defaults, 25Hz where applicable)
+    output:
+      time_reference: "ros"
+      ros_standard: false
+      use_enu: false
+      frame_id: "imu_link_ned"
+
+      log_status: 8
+      log_imu_data: 8
+      log_ekf_euler: 8
+      log_ekf_quat: 8
+      log_ekf_nav: 8
+      log_ekf_vel_body: 0
+      log_ekf_rot_accel_body: 0
+      log_ekf_rot_accel_ned: 0
+      log_ship_motion: 8
+      log_utc_time: 8
+      log_mag: 8
+      log_mag_calib: 0
+      log_gps1_vel: 10001
+      log_gps1_pos: 10001
+      log_gps1_hdt: 10001
+      log_gps1_raw: 10001
+      log_odo_vel: 0
+      log_event_a: 0
+      log_event_b: 0
+      log_event_c: 0
+      log_event_d: 0
+      log_air_data: 8
+      log_imu_short: 0
+
+    rtcm:
+      subscribe: false
+      topic_name: rtcm
+      namespace: ntrip_client
+
+    nmea:
+      publish: false
+      topic_name: nmea
+      namespace: ntrip_client
