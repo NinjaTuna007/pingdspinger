@@ -21,33 +21,14 @@
 #         the asko_survey*/pingDSP_traffic captures are sonar-only (ENABLE_SBG
 #         is forced false for those).
 #
-# Usage:
+# Configuration lives in the "USER CONFIG" block below: just edit the values
+# in this file. Every knob is also overridable from the environment for one-off
+# runs, e.g.  MODE=sim ENABLE_RECORDER=true ./pingdsp_bringup.sh
+#
+# Quick examples:
 #   ./pingdsp_bringup.sh                          # MODE=real (live hardware)
 #   MODE=sim ./pingdsp_bringup.sh                 # replay live_sensor.pcap
 #   MODE=sim SIM_PCAP=/path/to/capture.pcap ./pingdsp_bringup.sh
-#   SONAR_HOST=192.168.1.100 ./pingdsp_bringup.sh
-#   ENABLE_SBG=false ./pingdsp_bringup.sh
-#   ENABLE_BAG=true ./pingdsp_bringup.sh          # real mode: record everything
-#   ENABLE_RECORDER=true ./pingdsp_bringup.sh     # save filtered cloud to PLY/XYZ/PCD
-#
-# Override via environment:
-#   MODE            sim | real            (default: real)
-#   SONAR_HOST      sonar TCP host        (real; default: 3dss.launch default)
-#   SIM_PCAP        capture to replay     (sim;  default: <pkg>/network_dump/live_sensor.pcap)
-#   SIM_TCP_PORT    local sonar TCP port  (sim;  default: 23848)
-#   PCAP_SPEED      replay speed mult.    (sim;  default: 1.0)
-#   PCAP_LOOP       true/false            (sim;  default: true)
-#   PCAP_START      skip to this t_rel(s) (sim;  default: 0; sonar starts ~18.4s
-#                                          into live_sensor.pcap)
-#   FOXGLOVE_PORT   foxglove bridge port  (default: 8765)
-#   ENABLE_SBG      true/false            (default: true; auto-false for sonar-only pcaps)
-#   ENABLE_BAG      record a bag (real)   (default: false)
-#   ENABLE_RECORDER true/false            (default: false; runs pointcloud_recorder,
-#                                          which writes the accumulated filtered cloud
-#                                          to PLY/XYZ/PCD on Ctrl+C. Output dir/topic/
-#                                          frame are set in config/recorder_params.yaml,
-#                                          default <pkg>/pointclouds/.)
-#   ROS_SETUP       extra setup.bash to source (optional)
 
 set -euo pipefail
 
@@ -56,16 +37,38 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WS_DIR="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 
-SESSION="${SESSION:-pingdsp}"
-MODE="${MODE:-real}"
-FOXGLOVE_PORT="${FOXGLOVE_PORT:-8765}"
-ENABLE_BAG="${ENABLE_BAG:-false}"
-ENABLE_RECORDER="${ENABLE_RECORDER:-false}"
-SIM_PCAP="${SIM_PCAP:-$PKG_DIR/network_dump/live_sensor.pcap}"
-SIM_TCP_PORT="${SIM_TCP_PORT:-23848}"
-PCAP_SPEED="${PCAP_SPEED:-1.0}"
-PCAP_LOOP="${PCAP_LOOP:-true}"
-PCAP_START="${PCAP_START:-0}"
+# ============================================================================
+# USER CONFIG  -- edit these directly. Each is written as NAME="${NAME:-value}"
+# so an environment variable of the same name still overrides the value here.
+# ============================================================================
+
+# --- Mode & session --------------------------------------------------------
+MODE="${MODE:-real}"              # real = live hardware | sim = replay a pcap
+SESSION="${SESSION:-pingdsp}"     # tmux session name
+
+# --- Live hardware (MODE=real) ---------------------------------------------
+SONAR_HOST="${SONAR_HOST:-}"      # sonar TCP host; empty = 3dss.launch default (192.168.228.50)
+ENABLE_BAG="${ENABLE_BAG:-false}" # record a full `ros2 bag record -a` into <ws>/bags
+
+# --- Replay (MODE=sim) -----------------------------------------------------
+SIM_PCAP="${SIM_PCAP:-$PKG_DIR/network_dump/live_sensor.pcap}"  # capture to replay
+SIM_TCP_PORT="${SIM_TCP_PORT:-23848}"  # local sonar TCP port the driver connects to
+PCAP_SPEED="${PCAP_SPEED:-1.0}"        # replay speed multiplier
+PCAP_LOOP="${PCAP_LOOP:-true}"         # loop the capture forever
+PCAP_START="${PCAP_START:-0}"          # skip to this t_rel (s); sonar starts ~18.4s into live_sensor.pcap
+
+# --- Common ----------------------------------------------------------------
+FOXGLOVE_PORT="${FOXGLOVE_PORT:-8765}"       # foxglove bridge websocket port
+ENABLE_SBG="${ENABLE_SBG:-auto}"             # true | false | auto (auto: on, but off for sonar-only pcaps)
+ENABLE_RECORDER="${ENABLE_RECORDER:-false}"  # run pointcloud_recorder: filtered cloud -> PLY/XYZ/PCD on
+                                             #   Ctrl+C (output dir/topic/frame in config/recorder_params.yaml)
+REQUIRE_NAV_FIX="${REQUIRE_NAV_FIX:-auto}"   # true | false | auto (auto: false in sim, true in real)
+ROS_SETUP="${ROS_SETUP:-}"                   # extra setup.bash to source (optional)
+
+# ============================================================================
+# End of user config.
+# ============================================================================
+
 REPLAYER="$SCRIPT_DIR/replay_pingdsp_pcap.py"
 
 if [[ "$MODE" != "sim" && "$MODE" != "real" ]]; then
@@ -75,17 +78,16 @@ fi
 
 # SBG is on by default in both modes: in sim the real sbg_device ingests the
 # replayed UDP and owns the pose tree, exactly like real hardware. Only
-# live_sensor.pcap carries SBG, so auto-disable it for sonar-only captures
-# (the user can still force ENABLE_SBG=true if they know the capture has it).
-if [[ "$MODE" == "sim" && -z "${ENABLE_SBG:-}" ]]; then
-    if [[ "$(basename "$SIM_PCAP")" == live_sensor* ]]; then
-        ENABLE_SBG="true"
-    else
+# live_sensor.pcap carries SBG, so 'auto' disables it for sonar-only captures
+# (set ENABLE_SBG=true/false above to force it either way).
+if [[ "$ENABLE_SBG" == "auto" ]]; then
+    if [[ "$MODE" == "sim" && "$(basename "$SIM_PCAP")" != live_sensor* ]]; then
         ENABLE_SBG="false"
         echo "Note: '$(basename "$SIM_PCAP")' is a sonar-only capture; SBG disabled."
+    else
+        ENABLE_SBG="true"
     fi
 fi
-ENABLE_SBG="${ENABLE_SBG:-true}"
 
 if [[ "$MODE" == "sim" && ! -e "$SIM_PCAP" ]]; then
     echo "MODE=sim but capture not found: $SIM_PCAP" >&2
@@ -129,13 +131,15 @@ fi
 # REQUIRE_NAV_FIX gates the odom datum on a full GNSS solution (solution_mode==4).
 # Bench/replay captures (e.g. live_sensor.pcap) run attitude-only with NO GPS fix,
 # so requiring a solution would leave the TF tree disconnected and starve
-# /pingdsp/odom + /pingdsp/heading. Default it false in sim so the datum locks on
+# /pingdsp/odom + /pingdsp/heading. 'auto' = false in sim so the datum locks on
 # the first fix (the recorded position may be meaningless, but attitude/heading
 # and the TF chain become valid); true on real hardware.
-if [[ "$MODE" == "sim" ]]; then
-    REQUIRE_NAV_FIX="${REQUIRE_NAV_FIX:-false}"
-else
-    REQUIRE_NAV_FIX="${REQUIRE_NAV_FIX:-true}"
+if [[ "$REQUIRE_NAV_FIX" == "auto" ]]; then
+    if [[ "$MODE" == "sim" ]]; then
+        REQUIRE_NAV_FIX="false"
+    else
+        REQUIRE_NAV_FIX="true"
+    fi
 fi
 SBG_CMD="ros2 launch pingdsp_sbg sbg.launch require_nav_solution:=$REQUIRE_NAV_FIX"
 
@@ -144,7 +148,7 @@ REPLAY_CMD=""
 if [[ "$MODE" == "real" ]]; then
     # Live hardware: connect the driver to the sonar over TCP.
     SONAR_ARGS=""
-    if [[ -n "${SONAR_HOST:-}" ]]; then
+    if [[ -n "$SONAR_HOST" ]]; then
         SONAR_ARGS="sonar_host:=$SONAR_HOST"
     fi
     SONAR_CMD="ros2 launch pingdsp_driver 3dss.launch enable_control:=true record_bag:=$ENABLE_BAG enable_recorder:=$ENABLE_RECORDER $SONAR_TF_ARGS $SONAR_ARGS"
