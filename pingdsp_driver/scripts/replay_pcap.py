@@ -153,7 +153,7 @@ Examples:
   %(prog)s network_dump/pingDSP_traffic.pcap
   
   # Custom port and speed
-  %(prog)s network_dump/pingDSP_traffic.pcap --port 14001 --speed 10
+  %(prog)s network_dump/pingDSP_traffic.pcap --port 23848 --speed 10
   
   # Then in another terminal:
   ros2 launch pingdspinger 3dss.launch

@@ -14,7 +14,6 @@ tdss_driver:
     # Sonar geometry
     transducer_tilt_deg: -20.0  # Downward tilt angle of transducer
     
-    # Publishing options
-    publish_sidescan: true
-    waterfall_max_height: 1000  # Number of pings to keep in waterfall buffer
-    waterfall_target_width: 2000  # Target width in pixels (will downsample if needed)
+    # NOTE: the sidescan waterfall *image* is no longer produced by this driver.
+    # Run `sidescan_viewer_node` to render it on demand from the raw Ping3DSS
+    # samples (keeps bags small).

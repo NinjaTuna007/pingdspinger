@@ -1,0 +1,67 @@
+<?xml version="1.0"?>
+<!--
+  Sidescan viewer: renders a coloured sidescan waterfall from the N most recent
+  Ping3DSS messages and publishes it as a sensor_msgs/Image.
+
+  num_pings / target_width / publish_rate are also live tunable at runtime via
+  the parameter service (no relaunch needed):
+      ros2 param set /sidescan_viewer_node num_pings 500
+      ros2 param set /sidescan_viewer_node target_width 1500
+
+  Launch-time overrides:
+      ros2 launch pingdsp_driver sidescan_viewer.launch \
+          num_pings:=500 target_width:=1500 input_topic:=/sonar/ping
+-->
+<launch>
+    <!-- Base params (topics, save_dir, frame_id, save_on_shutdown). -->
+    <arg name="params_file" default="$(find-pkg-share pingdsp_driver)/config/sidescan_viewer_params.yaml"
+         description="Path to sidescan viewer parameter YAML file"/>
+
+    <!-- Commonly-tuned knobs. These override whatever is in params_file. -->
+    <arg name="num_pings" default="2048"
+         description="Pings (rows) to render in the waterfall"/>
+    <arg name="target_width" default="2048"
+         description="Rendered width in pixels (every ping binned down to this)"/>
+    <arg name="publish_rate" default="5.0"
+         description="Live image publish rate in Hz (&lt;=0 disables)"/>
+    <arg name="log_min" default="11.5"
+         description="log1p(amp) mapped to black (fixed window, no normalisation)"/>
+    <arg name="log_max" default="14.5"
+         description="log1p(amp) mapped to white; scales with sonar gain/range"/>
+    <arg name="gamma" default="1.0"
+         description="Gamma (&lt;1 brightens mid-tones, &gt;1 darkens)"/>
+    <arg name="colormap" default="copper"
+         description="Colormap: copper | bronze | gray"/>
+    <arg name="nadir_bins" default="0"
+         description="Pixels each side of nadir (centre) to blank (0=keep all)"/>
+    <arg name="flatten_strength" default="0.0"
+         description="Across-track gain flattening, 0=off..1=full (feature pop)"/>
+    <arg name="clahe_clip" default="0.0"
+         description="CLAHE local-contrast clip limit, 0=off (~2-4 typical)"/>
+    <arg name="clahe_grid" default="8"
+         description="CLAHE tile grid size per axis"/>
+    <arg name="despeckle" default="0"
+         description="Median despeckle kernel, 0=off, odd &gt;=3"/>
+    <arg name="input_topic" default="sonar/ping"
+         description="Ping3DSS input topic"/>
+    <arg name="output_topic" default="sonar/sidescan_image"
+         description="Rendered Image output topic"/>
+
+    <node pkg="pingdsp_driver" exec="sidescan_viewer_node" name="sidescan_viewer_node" output="screen">
+        <param from="$(var params_file)"/>
+        <param name="num_pings" value="$(var num_pings)"/>
+        <param name="target_width" value="$(var target_width)"/>
+        <param name="publish_rate" value="$(var publish_rate)"/>
+        <param name="log_min" value="$(var log_min)"/>
+        <param name="log_max" value="$(var log_max)"/>
+        <param name="gamma" value="$(var gamma)"/>
+        <param name="colormap" value="$(var colormap)"/>
+        <param name="nadir_bins" value="$(var nadir_bins)"/>
+        <param name="flatten_strength" value="$(var flatten_strength)"/>
+        <param name="clahe_clip" value="$(var clahe_clip)"/>
+        <param name="clahe_grid" value="$(var clahe_grid)"/>
+        <param name="despeckle" value="$(var despeckle)"/>
+        <param name="input_topic" value="$(var input_topic)"/>
+        <param name="output_topic" value="$(var output_topic)"/>
+    </node>
+</launch>

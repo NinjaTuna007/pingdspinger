@@ -1,0 +1,75 @@
+<?xml version="1.0"?>
+<!--
+  Full SBG stack for the PingDSP rig, all under the `pingdsp` namespace:
+
+    sbg_device                -> /pingdsp/sbg/*   (NED EKF stream over UDP)
+    sbg_to_odom_initializer   -> static utm_{zone}_{band} -> utm -> pingdsp/odom
+    sbg_to_odom               -> /pingdsp/odom + dynamic TF + heading/course/...
+
+  TF frame names (utm, pingdsp/odom, pingdsp/base_link) are global and are NOT
+  affected by the namespace.
+
+  Override the SBG driver config (e.g. to point at real hardware / a different
+  UDP port) with:
+      ros2 launch pingdsp_sbg sbg.launch sbg_config:=/path/to/sbg.yaml
+-->
+<launch>
+    <arg name="namespace" default="pingdsp"
+         description="Namespace for the SBG driver + odom nodes"/>
+    <arg name="sbg_config"
+         default="$(find-pkg-share pingdsp_sbg)/config/sbg_device_udp.yaml"
+         description="sbg_driver device configuration YAML"/>
+    <arg name="odom_config"
+         default="$(find-pkg-share pingdsp_sbg)/config/sbg_odom_params.yaml"
+         description="initializer + sbg_to_odom parameters"/>
+    <arg name="start_driver" default="true"
+         description="Also start the sbg_device driver itself"/>
+    <arg name="require_nav_solution" default="true"
+         description="Require a full GNSS nav solution (solution_mode==4) before
+                      locking the odom datum. Set false for bench/replay captures
+                      with no GPS fix (e.g. live_sensor.pcap) so the TF tree still
+                      connects and heading/odom publish from attitude."/>
+    <arg name="publish_sonar_tf" default="true"
+         description="Publish a static &lt;prefix&gt;/base_link -&gt; sonar mount transform so the sonar frame hangs off the SBG-driven vehicle frame"/>
+    <arg name="sonar_frame" default="sonar"
+         description="Sonar sensor frame id (must match tdss_driver frame_id)"/>
+    <arg name="sonar_x" default="0.0"/>
+    <arg name="sonar_y" default="0.0"/>
+    <arg name="sonar_z" default="0.0"/>
+    <arg name="sonar_roll" default="0.0"/>
+    <arg name="sonar_pitch" default="0.0"/>
+    <arg name="sonar_yaw" default="0.0"/>
+
+    <group>
+        <push-ros-namespace namespace="$(var namespace)"/>
+
+        <!-- SBG driver: streams /pingdsp/sbg/* from the Ellipse over UDP. -->
+        <node pkg="sbg_driver" exec="sbg_device" name="sbg_device" output="screen"
+              if="$(var start_driver)">
+            <param from="$(var sbg_config)"/>
+        </node>
+
+        <!-- Datum: lock pingdsp/odom origin to the first valid fix. -->
+        <node pkg="pingdsp_sbg" exec="sbg_to_odom_initializer"
+              name="sbg_to_odom_initializer" output="screen">
+            <param from="$(var odom_config)"/>
+            <param name="require_nav_solution" value="$(var require_nav_solution)"/>
+        </node>
+
+        <!-- NED EKF stream -> ENU odometry + TF. -->
+        <node pkg="pingdsp_sbg" exec="sbg_to_odom"
+              name="sbg_to_odom" output="screen">
+            <param from="$(var odom_config)"/>
+        </node>
+
+        <!-- Static vehicle -> sonar mount, so the sonar sensor frame attaches
+             to the SBG-driven base_link (the sonar driver runs publish_tf:=false
+             in this configuration). Edit the offsets to the measured lever arm. -->
+        <node pkg="tf2_ros" exec="static_transform_publisher"
+              name="base_link_to_sonar" output="screen"
+              if="$(var publish_sonar_tf)"
+              args="--x $(var sonar_x) --y $(var sonar_y) --z $(var sonar_z)
+                    --roll $(var sonar_roll) --pitch $(var sonar_pitch) --yaw $(var sonar_yaw)
+                    --frame-id $(var namespace)/base_link --child-frame-id $(var sonar_frame)"/>
+    </group>
+</launch>
