@@ -1,3 +1,10 @@
+# local/ holds KTH-specific (procurement, quotes, private drive data) and
+# otherwise-irrelevant material (presentations, dumps). Never commit it.
+local/
+
+# vendor/ IS tracked: it holds vendor technical docs (vendor/docs/) and the
+# 3DSS software installers (vendor/software/). Keep large dumps out of here.
+
 # network_dump folder and everything in it
 network_dump/
 

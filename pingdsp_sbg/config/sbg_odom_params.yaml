@@ -1,0 +1,40 @@
+# Parameters for the SBG -> odom stack.
+#
+# Topics are given RELATIVE to the node namespace. When launched under the
+# `pingdsp` namespace (see sbg.launch) and with the sbg_driver also namespaced,
+# `sbg/ekf_nav` resolves to `/pingdsp/sbg/ekf_nav`, etc.
+
+sbg_to_odom_initializer:
+  ros__parameters:
+    # Frame name prefix; the local metric frame is <frame_prefix>/odom.
+    frame_prefix: 'pingdsp'
+    # Nav fix input.
+    sbg_nav_topic: 'sbg/ekf_nav'
+    # Republish the static TF at this rate (Hz) so late joiners / bag splits
+    # still receive it. The datum itself is locked on the first valid fix.
+    update_rate: 1.0
+    # Require a full nav solution (SbgEkfStatus.solution_mode == 4) before
+    # locking the datum. Set false to accept the first message regardless.
+    require_nav_solution: true
+    verbose: true
+
+sbg_to_odom:
+  ros__parameters:
+    frame_prefix: 'pingdsp'
+    # SBG inputs.
+    ekf_nav_topic: 'sbg/ekf_nav'
+    ekf_quat_topic: 'sbg/ekf_quat'
+    ekf_euler_topic: 'sbg/ekf_euler'
+    imu_topic: 'sbg/imu_data'
+    imu_short_topic: 'sbg/imu_short'
+    # Orientation source: 'quat' | 'euler' | 'auto'. The PingDSP Ellipse
+    # streams EKF_EULER (+ IMU_SHORT) but NOT EKF_QUAT, so 'auto' (prefer quat,
+    # fall back to euler) makes the stack work with the device as-configured.
+    attitude_source: 'auto'
+    # Outputs (relative).
+    odom_topic: 'odom'
+    publish_rate: 10.0
+    # Broadcast the dynamic <prefix>/odom -> <prefix>/base_link TF.
+    publish_tf: true
+    # Populate Odometry covariance from SBG accuracy fields (1-sigma).
+    publish_covariance: true

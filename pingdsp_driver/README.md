@@ -39,8 +39,8 @@ To update installed configs/scripts, rebuild and re-source the workspace.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `sonar_host` | string | '192.168.1.100' | IP address of 3DSS-DX sonar (use '127.0.0.1' for pcap replay) |
-| `sonar_port` | int | 14001 | TCP port of sonar (use 23848 for pcap replay) |
+| `sonar_host` | string | '192.168.228.50' | IP of the PC running 3DSS-DX Control (use '127.0.0.1' for pcap replay) |
+| `sonar_port` | int | 23848 | TCP port of the 3DSS-DX data stream |
 | `frame_id` | string | 'sonar' | TF frame ID for sensor data |
 | `odom_frame_id` | string | 'odom' | TF frame ID for odometry (origin set at first ping) |
 | `map_frame_id` | string | 'map' | TF frame ID for map (reserved for future use) |
@@ -49,8 +49,8 @@ To update installed configs/scripts, rebuild and re-source the workspace.
 | `waterfall_max_height` | int | 500 | Maximum number of pings in waterfall buffer |
 | `transducer_tilt_deg` | float | -20.0 | Downward tilt angle of transducer in degrees |
 |-----------|------|---------|-------------|
-| `sonar_host` | string | '192.168.1.100' | IP address of 3DSS-DX sonar |
-| `sonar_port` | int | 14001 | TCP port of sonar |
+| `sonar_host` | string | '192.168.228.50' | IP of the PC running 3DSS-DX Control |
+| `sonar_port` | int | 23848 | TCP port of the 3DSS-DX data stream |
 | `frame_id` | string | 'sonar' | TF frame ID for sensor data |
 | `map_frame_id` | string | 'map' | TF frame ID for map |
 | `reconnect_delay` | float | 5.0 | Delay between reconnection attempts (seconds) |
@@ -122,7 +122,7 @@ The driver implements the two-step read protocol from the C++ API:
    - 88-byte header with ping metadata (ping number, timestamp, counters, rates)
    - Variable-length data sections:
      - Port/starboard bathymetry points (range, angle, amplitude)
-     - Port/starboard sidescan samples (uint16 intensity arrays)
+     - Port/starboard sidescan samples (float32 `(range, amplitude)` pairs)
 pingdspinger/
 
 ## Architecture
@@ -175,11 +175,11 @@ The driver provides full 6DOF odometry by parsing navigation sensors embedded in
 ### Cannot connect to sonar
 
 ```bash
-# Check network connectivity
-ping 192.168.1.100
+# Check network connectivity (.50 = PC running 3DSS-DX Control; head is .1)
+ping 192.168.228.50
 
-# Verify port is open (default: 14001)
-nc -zv 192.168.1.100 14001
+# Verify port is open (3DSS-DX data stream, TCP 23848)
+nc -zv 192.168.228.50 23848
 
 # Check current parameters
 ros2 param list /tdss_driver
@@ -231,7 +231,7 @@ ros2 run tf2_tools view_frames
 ## References
 
 - **C++ API**: pingdsp-3dss.hpp v0.6 (2016-11-09, PingDSP Inc.)
-- **TCP Protocol**: Default port 14001, binary stream with 16-byte preamble signature
+- **TCP Protocol**: 3DSS-DX data stream on TCP 23848 (`kTcpPort`), binary stream with 16-byte preamble signature
 - **Network Replay**: Uses tshark for pcap parsing and socket streaming
 - **Companion Package**: `pingdsp_xtf_visualizer` (for XTF file playback)
 
@@ -261,10 +261,14 @@ netstat -tuln | grep 23848
 ros2 launch pingdspinger test_driver.launch.py replay_speed:=1.0
 ```
 
-### Float conversion errors in Ping3DSS message
+### Sidescan looks like a uniform "wall of noise"
 
-- Fixed in latest version: sidescan samples now explicitly converted to uint16
-- If error persists, check that message definitions are rebuilt:
+- `Ping3DSS.*_sidescan_samples` is `float32[]`. The vendor
+  `SidescanPoint.amplitude` is a float32 envelope magnitude that routinely
+  exceeds 1e6; an earlier `uint16` field/cast wrapped it mod-65536 into uniform
+  noise. The driver now publishes the raw float amplitudes unchanged.
+- If you see the noise again, look for a stale `.astype(np.uint16)` in
+  `tdss_driver.py` or a `uint16[]` in `Ping3DSS.msg`, and rebuild the message:
   ```bash
   colcon build --packages-select pingdspinger --cmake-clean-cache
   ```
@@ -331,11 +335,11 @@ pingdspinger/
 ### Cannot connect to sonar
 
 ```bash
-# Check network connectivity
-ping 192.168.1.100
+# Check network connectivity (.50 = PC running 3DSS-DX Control; head is .1)
+ping 192.168.228.50
 
-# Verify port (default: 14001)
-nc -zv 192.168.1.100 14001
+# Verify port (3DSS-DX data stream, TCP 23848)
+nc -zv 192.168.228.50 23848
 ```
 
 ### No data published
@@ -352,7 +356,7 @@ nc -zv 192.168.1.100 14001
 ## References
 
 - **C++ API**: pingdsp-3dss.hpp v0.6 (PingDSP documentation)
-- **TCP Protocol**: Default port 14001, binary data stream
+- **TCP Protocol**: 3DSS-DX data stream on TCP 23848, binary data stream
 - **Companion Package**: `pingdsp_xtf_visualizer` (for XTF file playback)
 
 ## License

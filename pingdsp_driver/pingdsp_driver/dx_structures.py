@@ -21,7 +21,7 @@ DX_PREAMBLE = bytes([0x50, 0x49, 0x4e, 0x47,  # "PING"
                      0x27, 0x2b, 0x3a, 0xd8,
                      0x74, 0x2a, 0x1c, 0x33,
                      0xe9, 0xb0, 0x73, 0xb1])
-DX_TCP_PORT = 14001       # Default TCP port for 3DSS-DX
+DX_TCP_PORT = 23848       # 3DSS-DX data stream TCP port (kTcpPort; UM002 §12)
 
 
 @dataclass
@@ -593,9 +593,9 @@ class DxData:
         return points
     
     def get_port_sidescan(self) -> np.ndarray:
-        """Extract port sidescan samples as uint16 array."""
+        """Extract port sidescan amplitudes as a float32 array."""
         if not self.port_sidescan_offset or not self.port_sidescan_count:
-            return np.array([], dtype=np.uint16)
+            return np.array([], dtype=np.float32)
         
         offset = self.port_sidescan_offset
         # Sidescan points are stored as SidescanPoint structs (8 bytes each: range + amplitude)
@@ -608,9 +608,9 @@ class DxData:
         return np.array(samples, dtype=np.float32)
     
     def get_starboard_sidescan(self) -> np.ndarray:
-        """Extract starboard sidescan samples as uint16 array."""
+        """Extract starboard sidescan amplitudes as a float32 array."""
         if not self.starboard_sidescan_offset or not self.starboard_sidescan_count:
-            return np.array([], dtype=np.uint16)
+            return np.array([], dtype=np.float32)
         
         offset = self.starboard_sidescan_offset
         samples = []

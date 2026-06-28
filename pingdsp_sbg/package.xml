@@ -1,22 +1,27 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>pingdsp_driver</name>
-  <version>0.0.0</version>
-  <description>ROS 2 driver for PingDSP 3DSS-DX sonar (TCP streaming)</description>
+  <name>pingdsp_sbg</name>
+  <version>0.1.0</version>
+  <description>
+    SBG Ellipse INS integration for the PingDSP rig: converts the sbg_driver
+    NED EKF stream into a ROS odometry + TF tree (transforms3d, no
+    tf_transformations), with a datum initializer that anchors a local
+    metric frame to the first valid GNSS fix.
+  </description>
   <maintainer email="sdup@kth.se">Shekhar Devm Upadhyay</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
-  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>geographic_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
   <depend>tf2_ros</depend>
-  <depend>pingdsp_msg</depend>
-  <exec_depend>rcl_interfaces</exec_depend>
-  <exec_depend>std_srvs</exec_depend>
+  <depend>sbg_driver</depend>
   <exec_depend>python3-numpy</exec_depend>
-  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-transforms3d</exec_depend>
   <exec_depend>python3-utm</exec_depend>
 
   <test_depend>ament_copyright</test_depend>

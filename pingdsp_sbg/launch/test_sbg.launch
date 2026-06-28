@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<!--
+  Offline SBG verification: replay UDP from a pcap into sbg_device and bring up
+  the full odom stack. Use this to confirm the SBG path works without the live
+  Ellipse.
+
+      ros2 launch pingdsp_sbg test_sbg.launch pcap_file:=/abs/path/to/capture.pcap
+
+  The replayer streams sbgECom UDP datagrams to 127.0.0.1:<udp_port>; sbg_device
+  (from sbg.launch) listens on 0.0.0.0:<udp_port> per sbg_device_udp.yaml.
+-->
+<launch>
+    <arg name="pcap_file" description="Absolute path to a pcap with SBG UDP"/>
+    <arg name="udp_port" default="24333" description="SBG UDP port"/>
+    <arg name="speed" default="1.0" description="Replay speed multiplier"/>
+    <arg name="namespace" default="pingdsp"/>
+
+    <!-- Full SBG stack (driver + initializer + sbg_to_odom). -->
+    <include file="$(find-pkg-share pingdsp_sbg)/launch/sbg.launch">
+        <arg name="namespace" value="$(var namespace)"/>
+    </include>
+
+    <!-- Feed the driver from the capture (give it a moment to bind first). -->
+    <executable
+        cmd="python3 $(find-pkg-share pingdsp_sbg)/scripts/replay_sbg_udp.py $(var pcap_file) --port $(var udp_port) --speed $(var speed)"
+        output="screen" launch-prefix="bash -c 'sleep 3; exec $0 $@'"/>
+</launch>

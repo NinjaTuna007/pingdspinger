@@ -37,9 +37,12 @@ float32 starboard_sidescan3d_range_resolution
 sensor_msgs/PointCloud2 port_bathymetry
 sensor_msgs/PointCloud2 starboard_bathymetry
 
-# Sidescan data (raw samples)
-uint16[] port_sidescan_samples
-uint16[] starboard_sidescan_samples
+# Sidescan data (raw amplitudes).
+# float32 (NOT uint16): the 3DSS-DX SidescanPoint.amplitude is an IEEE-754
+# float32 envelope magnitude after gain/processing and routinely exceeds 1e6,
+# so a uint16 here would wrap mod-65536 and destroy the signal.
+float32[] port_sidescan_samples
+float32[] starboard_sidescan_samples
 
 # ASCII data (NMEA, TSS1)
 string ascii_data

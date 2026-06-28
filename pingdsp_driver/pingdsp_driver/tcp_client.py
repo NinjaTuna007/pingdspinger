@@ -26,7 +26,7 @@ class TcpClient:
         
         Args:
             host: IP address or hostname of 3DSS-DX sonar
-            port: TCP port (default 14001)
+            port: TCP port (3DSS-DX data stream, 23848)
             timeout: Socket timeout in seconds
         """
         self.host = host

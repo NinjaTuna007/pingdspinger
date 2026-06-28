@@ -9,6 +9,10 @@
          description="Path to recorder parameter YAML file"/>
     <arg name="control_config" default="$(find-pkg-share pingdsp_driver)/config/control_params.yaml" 
          description="Path to control parameter YAML file"/>
+    <arg name="sonar_host" default="192.168.228.50"
+         description="Sonar TCP host. Use 127.0.0.1 for pcap replay (MODE=sim)."/>
+    <arg name="sonar_port" default="23848"
+         description="3DSS-DX data stream TCP port (23848; UM002 §12)."/>
     <arg name="enable_filter" default="true" 
          description="Enable point cloud filtering"/>
     <arg name="enable_recorder" default="false" 
@@ -17,10 +21,18 @@
          description="Enable sonar control interface"/>
     <arg name="record_bag" default="false" 
          description="Enable ROS 2 bag recording of all topics"/>
+    <arg name="publish_tf" default="true"
+         description="Let the sonar driver broadcast map-&gt;odom-&gt;sonar TF. Set false when the SBG stack owns the pose tree."/>
+    <arg name="publish_odometry" default="true"
+         description="Let the sonar driver publish vehicle position/path. Set false when the SBG stack owns odometry."/>
     
     <!-- 3DSS-DX Driver Node -->
     <node pkg="pingdsp_driver" exec="tdss_driver" name="tdss_driver" output="screen">
         <param from="$(var config_file)"/>
+        <param name="sonar_host" value="$(var sonar_host)"/>
+        <param name="sonar_port" value="$(var sonar_port)"/>
+        <param name="publish_tf" value="$(var publish_tf)"/>
+        <param name="publish_odometry" value="$(var publish_odometry)"/>
     </node>
     
     <!-- Point Cloud Filter Node (optional) -->
@@ -36,6 +48,7 @@
     <!-- Sonar Control Node (optional) -->
     <node pkg="pingdsp_driver" exec="sonar_control_node" name="sonar_control_node" output="screen" if="$(var enable_control)">
         <param from="$(var control_config)"/>
+        <param name="sonar_host" value="$(var sonar_host)"/>
     </node>
     
     <!-- ROS 2 Bag Recorder (optional) -->
