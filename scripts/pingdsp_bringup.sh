@@ -28,20 +28,26 @@
 #   SONAR_HOST=192.168.1.100 ./pingdsp_bringup.sh
 #   ENABLE_SBG=false ./pingdsp_bringup.sh
 #   ENABLE_BAG=true ./pingdsp_bringup.sh          # real mode: record everything
+#   ENABLE_RECORDER=true ./pingdsp_bringup.sh     # save filtered cloud to PLY/XYZ/PCD
 #
 # Override via environment:
-#   MODE           sim | real            (default: real)
-#   SONAR_HOST     sonar TCP host        (real; default: 3dss.launch default)
-#   SIM_PCAP       capture to replay     (sim;  default: <pkg>/network_dump/live_sensor.pcap)
-#   SIM_TCP_PORT   local sonar TCP port  (sim;  default: 23848)
-#   PCAP_SPEED     replay speed mult.    (sim;  default: 1.0)
-#   PCAP_LOOP      true/false            (sim;  default: true)
-#   PCAP_START     skip to this t_rel(s) (sim;  default: 0; sonar starts ~18.4s
-#                                         into live_sensor.pcap)
-#   FOXGLOVE_PORT  foxglove bridge port  (default: 8765)
-#   ENABLE_SBG     true/false            (default: true; auto-false for sonar-only pcaps)
-#   ENABLE_BAG     record a bag (real)   (default: false)
-#   ROS_SETUP      extra setup.bash to source (optional)
+#   MODE            sim | real            (default: real)
+#   SONAR_HOST      sonar TCP host        (real; default: 3dss.launch default)
+#   SIM_PCAP        capture to replay     (sim;  default: <pkg>/network_dump/live_sensor.pcap)
+#   SIM_TCP_PORT    local sonar TCP port  (sim;  default: 23848)
+#   PCAP_SPEED      replay speed mult.    (sim;  default: 1.0)
+#   PCAP_LOOP       true/false            (sim;  default: true)
+#   PCAP_START      skip to this t_rel(s) (sim;  default: 0; sonar starts ~18.4s
+#                                          into live_sensor.pcap)
+#   FOXGLOVE_PORT   foxglove bridge port  (default: 8765)
+#   ENABLE_SBG      true/false            (default: true; auto-false for sonar-only pcaps)
+#   ENABLE_BAG      record a bag (real)   (default: false)
+#   ENABLE_RECORDER true/false            (default: false; runs pointcloud_recorder,
+#                                          which writes the accumulated filtered cloud
+#                                          to PLY/XYZ/PCD on Ctrl+C. Output dir/topic/
+#                                          frame are set in config/recorder_params.yaml,
+#                                          default <pkg>/pointclouds/.)
+#   ROS_SETUP       extra setup.bash to source (optional)
 
 set -euo pipefail
 
@@ -54,6 +60,7 @@ SESSION="${SESSION:-pingdsp}"
 MODE="${MODE:-real}"
 FOXGLOVE_PORT="${FOXGLOVE_PORT:-8765}"
 ENABLE_BAG="${ENABLE_BAG:-false}"
+ENABLE_RECORDER="${ENABLE_RECORDER:-false}"
 SIM_PCAP="${SIM_PCAP:-$PKG_DIR/network_dump/live_sensor.pcap}"
 SIM_TCP_PORT="${SIM_TCP_PORT:-23848}"
 PCAP_SPEED="${PCAP_SPEED:-1.0}"
@@ -140,14 +147,14 @@ if [[ "$MODE" == "real" ]]; then
     if [[ -n "${SONAR_HOST:-}" ]]; then
         SONAR_ARGS="sonar_host:=$SONAR_HOST"
     fi
-    SONAR_CMD="ros2 launch pingdsp_driver 3dss.launch enable_control:=true record_bag:=$ENABLE_BAG $SONAR_TF_ARGS $SONAR_ARGS"
+    SONAR_CMD="ros2 launch pingdsp_driver 3dss.launch enable_control:=true record_bag:=$ENABLE_BAG enable_recorder:=$ENABLE_RECORDER $SONAR_TF_ARGS $SONAR_ARGS"
     SONAR_STATUS_CMD="sleep 3; ros2 topic echo /sonar/status std_msgs/msg/String --field data"
 else
     # Sim: run the REAL driver against a local TCP server fed from the pcap.
     # No control channel exists in a replay, so the control GUI stays off.
     # tdss_driver only retries for ~2s, so it sleeps briefly to let the
     # replayer's TCP server come up first.
-    SONAR_CMD="sleep 4; ros2 launch pingdsp_driver 3dss.launch enable_control:=false sonar_host:=127.0.0.1 sonar_port:=$SIM_TCP_PORT $SONAR_TF_ARGS"
+    SONAR_CMD="sleep 4; ros2 launch pingdsp_driver 3dss.launch enable_control:=false sonar_host:=127.0.0.1 sonar_port:=$SIM_TCP_PORT enable_recorder:=$ENABLE_RECORDER $SONAR_TF_ARGS"
     # Second pane: the unified replayer (sonar TCP + SBG UDP on one clock). It
     # binds the TCP server immediately, then waits for the driver to connect
     # before starting the shared clock (so sonar + SBG stay aligned).
