@@ -1518,7 +1518,7 @@ class SonarControlGUI:
     
     # Built-in, read-only sidescan preset. These are the shipped defaults; the
     # 'Default' entry in the preset picker always maps here and cannot be
-    # overwritten or deleted. User presets live in gui/config/.
+    # overwritten or deleted. User presets live in gui/sidescan/config/.
     SS_DEFAULT_PRESET = {
         'num_pings': 2048,
         'width': 2048,
@@ -1550,7 +1550,7 @@ class SonarControlGUI:
         
         # Tunables, all live via the sliders below. Defaults mirror the old
         # sidescan_viewer_node so behaviour is identical, just rendered here.
-        # Defaults come from gui/config/sidescan_default.json (materialised from
+        # Defaults come from gui/sidescan/config/sidescan_default.json (made from
         # SS_DEFAULT_PRESET on first run), so they are editable on disk.
         d = self.ss_default_preset = self._ss_load_default()
         self.ss_num_var = tk.IntVar(value=d['num_pings'])
@@ -1581,13 +1581,15 @@ class SonarControlGUI:
         }
         
         self.ss_num_pings = int(self.ss_num_var.get())
+        self.ss_render_width = int(self.ss_width_var.get())
         self.ss_lock = threading.Lock()
+        # Keep each ping's RAW across-track samples so both the ping count and
+        # the per-row width can be resized live without discarding the image:
+        # ss_rows holds the raw amplitudes; ss_log_rows the cached log1p row
+        # binned to the *current* width (rebuilt only when the width changes).
         self.ss_rows = deque(maxlen=self.ss_num_pings)
+        self.ss_log_rows = deque(maxlen=self.ss_num_pings)
         self.ss_ping_count = 0
-        # nadir is applied at render time (so the slider needs no buffer clear);
-        # keep the per-ping processor's own nadir disabled.
-        self.ss_proc = ssi.WaterfallProcessor(int(self.ss_width_var.get()),
-                                              nadir_bins=0)
     
     def create_sidescan_tab(self):
         """Create the live sidescan waterfall tab with all knobs as sliders."""
@@ -1711,38 +1713,61 @@ class SonarControlGUI:
             Ping3DSS, 'sonar/ping', self.ss_ping_callback, 10)
         self._ss_after_id = self.window.after(300, self.ss_refresh)
     
+    @staticmethod
+    def _ss_bin_raw(raw, width):
+        """Bin a raw across-track ping to ``width`` and convert to log1p(amp)."""
+        return np.log1p(np.abs(ssi.resample_row(raw, width))).astype(np.float32)
+
     def _ss_set_num(self, _=None):
-        """Resize the ping buffer in place, keeping the most recent rows."""
+        """Resize the ping buffers in place, keeping the most recent rows."""
         n = max(int(self.ss_num_var.get()), 1)
         with self.ss_lock:
             self.ss_num_pings = n
             self.ss_rows = deque(self.ss_rows, maxlen=n)
+            self.ss_log_rows = deque(self.ss_log_rows, maxlen=n)
     
     def _ss_set_width(self, _=None):
-        """Change render width; rows are width-fixed so the buffer is cleared."""
+        """Re-bin the kept pings to the new width live - the image is kept."""
         w = max(int(self.ss_width_var.get()), 1)
         with self.ss_lock:
-            self.ss_proc.set_width(w)
-            self.ss_rows.clear()
+            if w == self.ss_render_width:
+                return
+            self.ss_render_width = w
+            self.ss_log_rows = deque(
+                (self._ss_bin_raw(r, w) for r in self.ss_rows),
+                maxlen=self.ss_num_pings)
     
     def ss_ping_callback(self, msg):
-        """Bin one ping to a log row and push it onto the buffer (ROS thread)."""
+        """Store one ping's raw row + its binned log row (ROS thread)."""
         try:
             port = np.asarray(msg.port_sidescan_samples, dtype=np.float32)
             stbd = np.asarray(msg.starboard_sidescan_samples, dtype=np.float32)
-            row = self.ss_proc.process_row(port, stbd)
-            if row is None:
+            combined = ssi.combine_ping(port, stbd)
+            if combined.size == 0:
                 return
+            # Scrub non-finite samples before binning so they cannot smear into
+            # neighbouring bins via the cumulative-sum resample.
+            combined = np.nan_to_num(combined, nan=0.0, posinf=0.0, neginf=0.0)
             with self.ss_lock:
-                self.ss_rows.appendleft(row)
+                w = self.ss_render_width
+                self.ss_rows.appendleft(combined)
+                self.ss_log_rows.appendleft(self._ss_bin_raw(combined, w))
                 self.ss_ping_count += 1
         except Exception:  # noqa: BLE001 - never let a bad ping kill the GUI
             pass
     
     def ss_render_bgr(self):
-        """Build the current waterfall as a BGR uint8 image, or None."""
+        """Build the current waterfall as a BGR uint8 image, or None.
+
+        Always renders at full sample resolution: the colour map / transfer
+        are applied to the whole stacked log image and the on-screen scaling
+        happens once, in :meth:`_ss_show_on_canvas`. (We deliberately do *not*
+        pre-downsample the float log image here - resampling a scrolling
+        waterfall that contains NaN-padded dropped pings made the starboard
+        side shimmer.)
+        """
         with self.ss_lock:
-            rows = list(self.ss_rows)
+            rows = list(self.ss_log_rows)
             num = self.ss_num_pings
         if not rows:
             return None
@@ -1841,39 +1866,71 @@ class SonarControlGUI:
         """Clear the buffer and rebuild the waterfall from scratch."""
         with self.ss_lock:
             self.ss_rows.clear()
+            self.ss_log_rows.clear()
             self.ss_ping_count = 0
         self.log("Sidescan buffer reset.")
     
     def ss_save(self):
-        """Write the current full-resolution waterfall to ~/sonar_data."""
+        """Save the full-resolution waterfall to a user-chosen file.
+
+        Opens a Save-As dialog defaulting to ``gui/sidescan/saved`` with a
+        timestamped name; the next save reopens wherever the last one landed.
+        """
         bgr = self.ss_render_bgr()
         if bgr is None:
             self.log("Sidescan: nothing to save yet.")
             return
         import os
         import cv2
-        out_dir = os.path.expanduser("~/sonar_data")
-        os.makedirs(out_dir, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = os.path.join(out_dir, f"sidescan_{stamp}.png")
-        cv2.imwrite(path, bgr)
-        self.log(f"Saved sidescan PNG: {path}")
+        path = filedialog.asksaveasfilename(
+            title="Save sidescan image",
+            initialdir=getattr(self, '_ss_last_save_dir', None)
+            or self._ss_saved_dir(),
+            initialfile=f"sidescan_{stamp}.png",
+            defaultextension=".png",
+            filetypes=[("PNG image", "*.png"),
+                       ("JPEG image", "*.jpg *.jpeg"),
+                       ("All files", "*.*")])
+        if not path:
+            self.log("Sidescan save cancelled.")
+            return
+        out_dir = os.path.dirname(os.path.abspath(path))
+        os.makedirs(out_dir, exist_ok=True)
+        if cv2.imwrite(path, bgr):
+            self._ss_last_save_dir = out_dir
+            self.log(f"Saved sidescan image: {path}")
+        else:
+            self.log(f"ERROR: could not write sidescan image to {path}")
 
-    # ----- Sidescan presets (Default in gui/config + user presets) -----------
-    def _ss_config_dir(self):
-        """Return gui/config/, creating it if needed."""
+    # ----- Sidescan files (config + saved images under gui/sidescan/) --------
+    def _ss_base_dir(self):
+        """Return gui/sidescan/ (base for the config + saved-image folders)."""
         import os
-        cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "sidescan")
+
+    def _ss_saved_dir(self):
+        """Return gui/sidescan/saved/, creating it if needed."""
+        import os
+        d = os.path.join(self._ss_base_dir(), "saved")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _ss_config_dir(self):
+        """Return gui/sidescan/config/, creating it if needed."""
+        import os
+        cfg = os.path.join(self._ss_base_dir(), "config")
         os.makedirs(cfg, exist_ok=True)
         return cfg
 
     def _ss_default_path(self):
-        """Path of the editable Default preset file in gui/config/."""
+        """Path of the editable Default preset file in gui/sidescan/config/."""
         import os
         return os.path.join(self._ss_config_dir(), "sidescan_default.json")
 
     def _ss_load_default(self):
-        """Return the Default preset, materialising it in gui/config/.
+        """Return the Default preset, materialising it in gui/sidescan/config/.
 
         Starts from the built-in SS_DEFAULT_PRESET; if the JSON exists its
         values override (defaults are editable on disk); otherwise the file is
@@ -1906,7 +1963,7 @@ class SonarControlGUI:
         return params
 
     def _ss_preset_path(self):
-        """Return the JSON path for user presets, creating gui/config/."""
+        """Return the JSON path for user presets, creating gui/sidescan/config/."""
         import os
         return os.path.join(self._ss_config_dir(), "sidescan_presets.json")
 
@@ -1952,7 +2009,8 @@ class SonarControlGUI:
                     var.set(params[k])
                 except Exception:  # noqa: BLE001 - skip incompatible values
                     pass
-        # Resize the ping buffer; only rebuild width (which clears it) on change.
+        # Resize the ping buffer, then re-bin to the new width if it changed
+        # (both keep the accumulated image; width only rebins, never clears).
         self._ss_set_num()
         if int(self.ss_width_var.get()) != old_w:
             self._ss_set_width()
