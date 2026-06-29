@@ -14,6 +14,11 @@ bags/
 # pointclouds folder and everything in it
 pointclouds/
 
+# GUI config: track the shipped default sidescan preset, but keep user
+# presets (and any other local config) out of git.
+gui/config/*
+!gui/config/sidescan_default.json
+
 #pycache stuff in any sub-directory
 **/__pycache__/
 

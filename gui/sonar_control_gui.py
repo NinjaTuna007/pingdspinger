@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import tkinter as tk
-from tkinter import ttk, scrolledtext, filedialog, messagebox
+from tkinter import ttk, scrolledtext, filedialog, messagebox, simpledialog
 import rclpy
 from rclpy.node import Node
 from pingdsp_msg.srv import (
@@ -52,9 +52,14 @@ class SonarControlGUI:
         status_frame.pack(fill="x", padx=10, pady=5)
         ttk.Label(status_frame, textvariable=self.status_var, relief="sunken", anchor="w").pack(fill="x")
         
-        # Create notebook for tabs
-        self.notebook = ttk.Notebook(self.window)
-        self.notebook.pack(fill="both", expand=True, padx=10, pady=5)
+        # Main split: tabs on top, console log below, joined by a draggable
+        # sash so the console vs tab-area sizes can be set by click-dragging.
+        self.main_pane = ttk.PanedWindow(self.window, orient="vertical")
+        self.main_pane.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # Create notebook for tabs (top pane)
+        self.notebook = ttk.Notebook(self.main_pane)
+        self.main_pane.add(self.notebook, weight=4)
         
         # Live sidescan state (buffer + renderer) must exist before its tab.
         self._init_sidescan_state()
@@ -73,31 +78,126 @@ class SonarControlGUI:
         self.create_record_tab()
         self.create_baud_tab()
         
-        # Console log at bottom
-        console_frame = ttk.LabelFrame(self.window, text="Console Log", padding=5)
-        console_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        # Console log (bottom pane of the main split)
+        console_frame = ttk.LabelFrame(self.main_pane, text="Console Log",
+                                       padding=5)
+        self.main_pane.add(console_frame, weight=1)
         
         self.console = scrolledtext.ScrolledText(console_frame, height=8, state='disabled', wrap='word')
         self.console.pack(fill="both", expand=True)
-        
-        ttk.Button(console_frame, text="Clear Log", command=self.clear_log).pack(pady=2)
+        # Colour-code the log; commands/success/errors are also bold.
+        import tkinter.font as tkfont
+        try:
+            _bold = tkfont.Font(font=self.console.cget('font'))
+            _bold.configure(weight='bold')
+        except Exception:  # noqa: BLE001 - fall back to colour-only
+            _bold = None
+        self.console.tag_config('time', foreground='#888888')
+        self.console.tag_config('command', foreground='#1565c0')   # blue
+        self.console.tag_config('response', foreground='#00695c')  # teal
+        self.console.tag_config('success', foreground='#2e7d32')   # green
+        self.console.tag_config('error', foreground='#c62828')     # red
+        self.console.tag_config('info', foreground='#333333')      # default
+        if _bold is not None:
+            for _t in ('command', 'success', 'error'):
+                self.console.tag_config(_t, font=_bold)
+
+        # Keep every line in memory so the category filters below can
+        # show/hide whole classes of message without losing them.
+        self.log_entries = []
+        self.log_filters = {
+            'command': tk.BooleanVar(value=True),
+            'response': tk.BooleanVar(value=True),
+            'success': tk.BooleanVar(value=True),
+            'error': tk.BooleanVar(value=True),
+            'info': tk.BooleanVar(value=True),
+        }
+
+        ctrl_row = ttk.Frame(console_frame)
+        ctrl_row.pack(fill="x", pady=2)
+        ttk.Button(ctrl_row, text="Clear Log",
+                   command=self.clear_log).pack(side="left", padx=4)
+        ttk.Label(ctrl_row, text="Show:").pack(side="left", padx=(10, 2))
+        for _key, _lbl in (('command', 'Commands'), ('response', 'Responses'),
+                           ('success', 'Success'), ('error', 'Errors'),
+                           ('info', 'Info')):
+            ttk.Checkbutton(ctrl_row, text=_lbl,
+                            variable=self.log_filters[_key],
+                            command=self._rebuild_console).pack(
+                                side="left", padx=2)
         
         self.log("GUI initialized. Ready to control sonar.")
         
         # Subscribe to raw pings and start the live render loop.
         self._start_sidescan_stream()
     
-    def log(self, message):
-        """Add a timestamped message to the console log"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
+    @staticmethod
+    def _classify_log(message):
+        """Pick a colour tag from the message prefix (commands/responses/etc)."""
+        m = message.lstrip()
+        if m.startswith("Calling "):
+            return 'command'
+        if m.startswith("\u2713"):          # checkmark -> success
+            return 'success'
+        if m.startswith("Response:"):
+            return 'response'
+        if (m.startswith("\u2717")           # cross mark -> failure
+                or m.startswith("ERROR")
+                or m.startswith("Failed")):
+            return 'error'
+        return 'info'
+
+    # Direction markers: sent commands get an arrow out, received lines an
+    # arrow in, status lines a tick/cross. Reads like a transcript.
+    _LOG_MARKERS = {'command': '\u2192 ', 'response': '\u2190 ',
+                    'success': '\u2713 ', 'error': '\u2717 ', 'info': '  '}
+
+    def _insert_line(self, timestamp, body, tag):
+        """Write one already-classified line to the console widget."""
+        marker = self._LOG_MARKERS.get(tag, '  ')
         self.console.config(state='normal')
-        self.console.insert('end', f"[{timestamp}] {message}\n")
+        self.console.insert('end', f"[{timestamp}] ", 'time')
+        self.console.insert('end', f"{marker}{body}\n", tag)
         self.console.see('end')
         self.console.config(state='disabled')
+
+    def log(self, message, level=None):
+        """Add a timestamped, colour-coded message to the console log.
+
+        ``level`` forces a tag ('command', 'response', 'success', 'error',
+        'info'); when omitted it is inferred from the message prefix so all the
+        existing call sites colour themselves automatically. Lines are stored so
+        the category filters can hide/show them, and rendered as a transcript
+        with direction arrows.
+        """
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        tag = level or self._classify_log(message)
+        body = message.lstrip()
+        if body[:1] in ('\u2713', '\u2717'):   # drop a caller's embedded glyph
+            body = body[1:].lstrip()
+        # Early-return errors (e.g. "ERROR: <svc> service unavailable") otherwise
+        # leave the status bar stuck on a stale "...ing..." message. Surface them
+        # there. (The post-call "FAILED:" branches set their own status first.)
+        if (tag == 'error' and body.startswith('ERROR')
+                and hasattr(self, 'status_var')):
+            self.status_var.set(body)
+        self.log_entries.append((timestamp, body, tag))
+        if self.log_filters[tag].get():
+            self._insert_line(timestamp, body, tag)
         self.node.get_logger().info(message)
+
+    def _rebuild_console(self):
+        """Re-render the console honouring the current category filters."""
+        self.console.config(state='normal')
+        self.console.delete('1.0', 'end')
+        self.console.config(state='disabled')
+        for timestamp, body, tag in self.log_entries:
+            if self.log_filters[tag].get():
+                self._insert_line(timestamp, body, tag)
     
     def clear_log(self):
-        """Clear the console log"""
+        """Clear the console log and the stored history."""
+        self.log_entries.clear()
         self.console.config(state='normal')
         self.console.delete('1.0', 'end')
         self.console.config(state='disabled')
@@ -1416,32 +1516,69 @@ class SonarControlGUI:
     # Live Sidescan viewer (renders in-GUI; no ROS image topic -> no bag bloat)
     # ========================================================================
     
+    # Built-in, read-only sidescan preset. These are the shipped defaults; the
+    # 'Default' entry in the preset picker always maps here and cannot be
+    # overwritten or deleted. User presets live in gui/config/.
+    SS_DEFAULT_PRESET = {
+        'num_pings': 2048,
+        'width': 2048,
+        'log_min': 11.5,
+        'log_max': 15.0,
+        'gamma': 1.0,
+        'nadir_bins': 0,
+        'flatten': 0.70,
+        'clahe': 0.5,
+        'despeckle': 0,
+        'zoom': 1.0,
+        'rate': 5.0,
+        'colormap': 'copper',
+    }
+
     def _init_sidescan_state(self):
         """Set up the rolling ping buffer, renderer and tunable parameters."""
-        # Display box (the rendered waterfall is scaled to fit, keeping aspect).
-        self.ss_disp_w = 760
-        self.ss_disp_h = 680
+        # The waterfall is drawn into a scrollable canvas: it is scaled to fill
+        # the available width (times Zoom) and may be taller than the viewport,
+        # so the vertical scrollbar lets you scroll down into older pings.
         self._ss_after_id = None
         self._ss_photo = None  # keep a ref so Tk does not GC the image
+        self.ss_canvas = None
+        self.ss_img_id = None
+        self.ss_text_id = None
         
         if not _HAVE_SIDESCAN:
             return
         
         # Tunables, all live via the sliders below. Defaults mirror the old
         # sidescan_viewer_node so behaviour is identical, just rendered here.
-        self.ss_num_var = tk.IntVar(value=ssi.DEFAULT_NUM_PINGS)
-        self.ss_width_var = tk.IntVar(value=ssi.DEFAULT_TARGET_WIDTH)
-        self.ss_logmin_var = tk.DoubleVar(value=11.5)
-        self.ss_logmax_var = tk.DoubleVar(value=14.5)
-        self.ss_gamma_var = tk.DoubleVar(value=1.0)
-        self.ss_nadir_var = tk.IntVar(value=0)
-        self.ss_flatten_var = tk.DoubleVar(value=0.0)
-        self.ss_clahe_var = tk.DoubleVar(value=0.0)
-        self.ss_despeckle_var = tk.IntVar(value=0)
-        self.ss_colormap_var = tk.StringVar(value=ssi.DEFAULT_COLORMAP)
-        self.ss_rate_var = tk.DoubleVar(value=5.0)
+        # Defaults come from gui/config/sidescan_default.json (materialised from
+        # SS_DEFAULT_PRESET on first run), so they are editable on disk.
+        d = self.ss_default_preset = self._ss_load_default()
+        self.ss_num_var = tk.IntVar(value=d['num_pings'])
+        self.ss_width_var = tk.IntVar(value=d['width'])
+        self.ss_logmin_var = tk.DoubleVar(value=d['log_min'])
+        self.ss_logmax_var = tk.DoubleVar(value=d['log_max'])
+        self.ss_gamma_var = tk.DoubleVar(value=d['gamma'])
+        self.ss_nadir_var = tk.IntVar(value=d['nadir_bins'])
+        self.ss_flatten_var = tk.DoubleVar(value=d['flatten'])
+        self.ss_clahe_var = tk.DoubleVar(value=d['clahe'])
+        self.ss_despeckle_var = tk.IntVar(value=d['despeckle'])
+        self.ss_colormap_var = tk.StringVar(value=d['colormap'])
+        self.ss_rate_var = tk.DoubleVar(value=d['rate'])
         self.ss_paused = tk.BooleanVar(value=False)
+        # Display: zoom multiplier on top of fit-to-width, and whether to keep
+        # the newest ping pinned at the top (off = free scroll through history).
+        self.ss_zoom_var = tk.DoubleVar(value=d['zoom'])
+        self.ss_follow = tk.BooleanVar(value=True)
         self.ss_clahe_grid = 8
+        # Map preset keys <-> live Tk vars so presets can be saved/loaded.
+        self.ss_param_vars = {
+            'num_pings': self.ss_num_var, 'width': self.ss_width_var,
+            'log_min': self.ss_logmin_var, 'log_max': self.ss_logmax_var,
+            'gamma': self.ss_gamma_var, 'nadir_bins': self.ss_nadir_var,
+            'flatten': self.ss_flatten_var, 'clahe': self.ss_clahe_var,
+            'despeckle': self.ss_despeckle_var, 'zoom': self.ss_zoom_var,
+            'rate': self.ss_rate_var, 'colormap': self.ss_colormap_var,
+        }
         
         self.ss_num_pings = int(self.ss_num_var.get())
         self.ss_lock = threading.Lock()
@@ -1467,20 +1604,41 @@ class SonarControlGUI:
                       foreground="red").pack(anchor="w", padx=15, pady=15)
             return
         
-        # Left: the rendered waterfall. Right: the controls.
-        body = ttk.Frame(tab)
+        # Waterfall (left) and controls (right) joined by a draggable sash, so
+        # the control sidebar width can be resized by click-dragging.
+        body = ttk.PanedWindow(tab, orient="horizontal")
         body.pack(fill="both", expand=True)
         
-        image_frame = ttk.LabelFrame(body, text="Waterfall (newest on top)",
-                                     padding=5)
-        image_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
-        self.ss_image_label = ttk.Label(image_frame,
-                                        text="Waiting for pings on sonar/ping...",
-                                        anchor="center")
-        self.ss_image_label.pack(fill="both", expand=True)
+        image_frame = ttk.LabelFrame(
+            body, text="Waterfall (newest on top - scroll down for the past)",
+            padding=5)
+        body.add(image_frame, weight=5)
+        # Scrollable canvas: the image fills the width and can exceed the
+        # viewport height so you can scroll back through older pings.
+        canvas = tk.Canvas(image_frame, background="#101010",
+                           highlightthickness=0)
+        vbar = ttk.Scrollbar(image_frame, orient="vertical",
+                             command=canvas.yview)
+        hbar = ttk.Scrollbar(image_frame, orient="horizontal",
+                             command=canvas.xview)
+        canvas.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vbar.grid(row=0, column=1, sticky="ns")
+        hbar.grid(row=1, column=0, sticky="ew")
+        image_frame.rowconfigure(0, weight=1)
+        image_frame.columnconfigure(0, weight=1)
+        self.ss_canvas = canvas
+        self.ss_img_id = None
+        self.ss_text_id = canvas.create_text(
+            12, 12, anchor="nw", fill="#cccccc",
+            text="Waiting for pings on sonar/ping...")
+        # Scroll with the mouse wheel anywhere over the waterfall.
+        canvas.bind("<MouseWheel>", self._ss_on_wheel)
+        canvas.bind("<Button-4>", self._ss_on_wheel)
+        canvas.bind("<Button-5>", self._ss_on_wheel)
         
         ctrl = ttk.LabelFrame(body, text="Visualisation", padding=8)
-        ctrl.pack(side="right", fill="y", padx=5, pady=5)
+        body.add(ctrl, weight=1)
         
         def add_slider(label, var, lo, hi, res, cmd=None):
             row = ttk.Frame(ctrl)
@@ -1489,6 +1647,24 @@ class SonarControlGUI:
             tk.Scale(row, variable=var, from_=lo, to=hi, resolution=res,
                      orient="horizontal", length=210, command=cmd).pack(
                          side="left", fill="x", expand=True)
+        
+        # --- Presets (Default is built-in and read-only) ---
+        prow = ttk.Frame(ctrl)
+        prow.pack(fill="x", pady=(0, 2))
+        ttk.Label(prow, text="Preset", width=15).pack(side="left")
+        self.ss_preset_var = tk.StringVar(value="Default")
+        self.ss_preset_combo = ttk.Combobox(
+            prow, textvariable=self.ss_preset_var, state="readonly", width=14)
+        self.ss_preset_combo.pack(side="left", fill="x", expand=True)
+        self.ss_preset_combo.bind(
+            "<<ComboboxSelected>>", lambda e: self.ss_preset_load())
+        pbtn = ttk.Frame(ctrl)
+        pbtn.pack(fill="x", pady=(0, 6))
+        ttk.Button(pbtn, text="Save As...",
+                   command=self.ss_preset_save).pack(side="left", padx=2)
+        ttk.Button(pbtn, text="Delete",
+                   command=self.ss_preset_delete).pack(side="left", padx=2)
+        self._ss_refresh_preset_list()
         
         add_slider("Pings (rows)", self.ss_num_var, 64, 4096, 64,
                    self._ss_set_num)
@@ -1501,6 +1677,7 @@ class SonarControlGUI:
         add_slider("Flatten", self.ss_flatten_var, 0.0, 1.0, 0.05)
         add_slider("CLAHE clip", self.ss_clahe_var, 0.0, 8.0, 0.5)
         add_slider("Despeckle", self.ss_despeckle_var, 0, 9, 1)
+        add_slider("Zoom", self.ss_zoom_var, 0.25, 4.0, 0.05)
         add_slider("Refresh (Hz)", self.ss_rate_var, 1.0, 15.0, 1.0)
         
         cmap_row = ttk.Frame(ctrl)
@@ -1518,6 +1695,8 @@ class SonarControlGUI:
             side="left", padx=3)
         ttk.Checkbutton(btns, text="Pause", variable=self.ss_paused).pack(
             side="left", padx=3)
+        ttk.Checkbutton(btns, text="Follow newest",
+                        variable=self.ss_follow).pack(side="left", padx=3)
         
         self.ss_info_var = tk.StringVar(value="no pings yet")
         ttk.Label(ctrl, textvariable=self.ss_info_var,
@@ -1593,6 +1772,50 @@ class SonarControlGUI:
             gray = ssi.despeckle_gray(gray, ds)
         return ssi.apply_colormap(gray, self.ss_colormap_var.get())
     
+    def _ss_on_wheel(self, event):
+        """Scroll the waterfall vertically with the mouse wheel."""
+        if self.ss_canvas is None:
+            return
+        if getattr(event, 'num', None) == 4:        # X11 scroll up
+            delta = -1
+        elif getattr(event, 'num', None) == 5:      # X11 scroll down
+            delta = 1
+        else:                                        # Windows/macOS
+            delta = -1 if event.delta > 0 else 1
+        self.ss_canvas.yview_scroll(delta, "units")
+
+    def _ss_show_on_canvas(self, bgr):
+        """Scale the waterfall to fill the canvas width (x Zoom) and draw it.
+
+        The image keeps its aspect ratio, so when it is taller than the
+        viewport the vertical scrollbar exposes the older pings below.
+        """
+        view_w = max(int(self.ss_canvas.winfo_width()), 1)
+        if view_w < 10:   # not laid out yet; try again next tick
+            return
+        h0, w0 = bgr.shape[:2]
+        zoom = max(float(self.ss_zoom_var.get()), 0.05)
+        scale = (view_w / float(w0)) * zoom
+        disp_w = max(int(round(w0 * scale)), 1)
+        disp_h = max(int(round(h0 * scale)), 1)
+        rgb = np.ascontiguousarray(bgr[:, :, ::-1])
+        img = PILImage.fromarray(rgb).resize((disp_w, disp_h),
+                                             PILImage.BILINEAR)
+        self._ss_photo = ImageTk.PhotoImage(img)
+        if self.ss_img_id is None:
+            self.ss_img_id = self.ss_canvas.create_image(
+                0, 0, anchor="nw", image=self._ss_photo)
+        else:
+            self.ss_canvas.itemconfigure(self.ss_img_id, image=self._ss_photo)
+            self.ss_canvas.coords(self.ss_img_id, 0, 0)
+        if self.ss_text_id is not None:
+            self.ss_canvas.itemconfigure(self.ss_text_id, state="hidden")
+        self.ss_canvas.configure(scrollregion=(0, 0, disp_w, disp_h))
+        # Keep the newest ping (top of the image) in view unless the user has
+        # turned off follow to browse the past.
+        if self.ss_follow.get():
+            self.ss_canvas.yview_moveto(0.0)
+
     def ss_refresh(self):
         """Render the waterfall into the tab; reschedules itself (main thread)."""
         try:
@@ -1600,11 +1823,7 @@ class SonarControlGUI:
             if visible and not self.ss_paused.get():
                 bgr = self.ss_render_bgr()
                 if bgr is not None:
-                    rgb = np.ascontiguousarray(bgr[:, :, ::-1])
-                    img = PILImage.fromarray(rgb)
-                    img.thumbnail((self.ss_disp_w, self.ss_disp_h))
-                    self._ss_photo = ImageTk.PhotoImage(img)
-                    self.ss_image_label.configure(image=self._ss_photo, text="")
+                    self._ss_show_on_canvas(bgr)
                     with self.ss_lock:
                         filled = len(self.ss_rows)
                     self.ss_info_var.set(
@@ -1639,7 +1858,153 @@ class SonarControlGUI:
         path = os.path.join(out_dir, f"sidescan_{stamp}.png")
         cv2.imwrite(path, bgr)
         self.log(f"Saved sidescan PNG: {path}")
-    
+
+    # ----- Sidescan presets (Default in gui/config + user presets) -----------
+    def _ss_config_dir(self):
+        """Return gui/config/, creating it if needed."""
+        import os
+        cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
+        os.makedirs(cfg, exist_ok=True)
+        return cfg
+
+    def _ss_default_path(self):
+        """Path of the editable Default preset file in gui/config/."""
+        import os
+        return os.path.join(self._ss_config_dir(), "sidescan_default.json")
+
+    def _ss_load_default(self):
+        """Return the Default preset, materialising it in gui/config/.
+
+        Starts from the built-in SS_DEFAULT_PRESET; if the JSON exists its
+        values override (defaults are editable on disk); otherwise the file is
+        written so it appears in the config dir. Logs nothing (this runs before
+        the console exists) - errors go to stderr.
+        """
+        import json
+        import os
+        import sys
+        params = dict(self.SS_DEFAULT_PRESET)
+        path = self._ss_default_path()
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    for k in params:
+                        if data.get(k) is not None:
+                            params[k] = data[k]
+            except Exception as e:  # noqa: BLE001
+                print(f"[sidescan] could not read default preset: {e}",
+                      file=sys.stderr)
+        else:
+            try:
+                with open(path, "w") as f:
+                    json.dump(params, f, indent=2, sort_keys=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"[sidescan] could not write default preset: {e}",
+                      file=sys.stderr)
+        return params
+
+    def _ss_preset_path(self):
+        """Return the JSON path for user presets, creating gui/config/."""
+        import os
+        return os.path.join(self._ss_config_dir(), "sidescan_presets.json")
+
+    def _ss_load_presets_file(self):
+        """Load the user preset dict from disk (empty on missing/bad file)."""
+        import json
+        import os
+        path = self._ss_preset_path()
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception as e:  # noqa: BLE001
+            self.log(f"ERROR: could not read sidescan presets: {e}")
+            return {}
+
+    def _ss_save_presets_file(self, presets):
+        """Persist the user preset dict to disk."""
+        import json
+        try:
+            with open(self._ss_preset_path(), "w") as f:
+                json.dump(presets, f, indent=2, sort_keys=True)
+        except Exception as e:  # noqa: BLE001
+            self.log(f"ERROR: could not save sidescan presets: {e}")
+
+    def _ss_refresh_preset_list(self):
+        """Repopulate the preset combobox: Default first, then user presets."""
+        names = ["Default"] + sorted(self._ss_load_presets_file().keys())
+        self.ss_preset_combo.configure(values=names)
+
+    def _ss_collect_params(self):
+        """Snapshot the current slider/colormap values as a preset dict."""
+        return {k: v.get() for k, v in self.ss_param_vars.items()}
+
+    def _ss_apply_params(self, params):
+        """Apply a preset dict to the live controls (and side effects)."""
+        old_w = int(self.ss_width_var.get())
+        for k, var in self.ss_param_vars.items():
+            if params.get(k) is not None:
+                try:
+                    var.set(params[k])
+                except Exception:  # noqa: BLE001 - skip incompatible values
+                    pass
+        # Resize the ping buffer; only rebuild width (which clears it) on change.
+        self._ss_set_num()
+        if int(self.ss_width_var.get()) != old_w:
+            self._ss_set_width()
+
+    def ss_preset_load(self):
+        """Load the preset currently selected in the combobox."""
+        name = self.ss_preset_var.get()
+        if name == "Default":
+            # Re-read from disk so on-the-fly edits to the file take effect.
+            params = self._ss_load_default()
+        else:
+            params = self._ss_load_presets_file().get(name)
+            if params is None:
+                self.log(f"ERROR: sidescan preset '{name}' not found")
+                return
+        self._ss_apply_params(params)
+        self.log(f"Loaded sidescan preset '{name}'", level='info')
+
+    def ss_preset_save(self):
+        """Save the current settings as a named user preset."""
+        name = simpledialog.askstring(
+            "Save preset", "Preset name:", parent=self.window)
+        if not name:
+            return
+        name = name.strip()
+        if name.lower() == "default":
+            messagebox.showerror(
+                "Save preset",
+                "'Default' is reserved and cannot be overwritten.")
+            return
+        presets = self._ss_load_presets_file()
+        presets[name] = self._ss_collect_params()
+        self._ss_save_presets_file(presets)
+        self._ss_refresh_preset_list()
+        self.ss_preset_var.set(name)
+        self.log(f"Saved sidescan preset '{name}'", level='info')
+
+    def ss_preset_delete(self):
+        """Delete the selected user preset (the Default is protected)."""
+        name = self.ss_preset_var.get()
+        if name == "Default":
+            messagebox.showinfo(
+                "Delete preset", "The Default preset cannot be deleted.")
+            return
+        presets = self._ss_load_presets_file()
+        if name in presets:
+            del presets[name]
+            self._ss_save_presets_file(presets)
+        self._ss_refresh_preset_list()
+        self.ss_preset_var.set("Default")
+        self.log(f"Deleted sidescan preset '{name}'", level='info')
+
     def run(self):
         self.window.mainloop()
 
