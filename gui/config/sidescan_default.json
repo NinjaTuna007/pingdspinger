@@ -1,0 +1,14 @@
+{
+  "clahe": 0.5,
+  "colormap": "copper",
+  "despeckle": 0,
+  "flatten": 0.7,
+  "gamma": 1.0,
+  "log_max": 15.0,
+  "log_min": 11.5,
+  "nadir_bins": 0,
+  "num_pings": 2048,
+  "rate": 5.0,
+  "width": 2048,
+  "zoom": 1.0
+}
