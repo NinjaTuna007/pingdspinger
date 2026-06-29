@@ -221,8 +221,23 @@ def get_lut(name):
 
 
 def apply_colormap(gray, name=DEFAULT_COLORMAP):
-    """Map a uint8 grayscale array through the named colormap (BGR uint8)."""
-    return get_lut(name)[np.asarray(gray)]
+    """Map a uint8 grayscale array through the named colormap (BGR uint8).
+
+    For a 2-D uint8 image this uses ``cv2.LUT`` (~30x faster than numpy fancy
+    indexing on a multi-megapixel frame); it falls back to the plain numpy
+    lookup for non-2-D / non-uint8 inputs or if OpenCV is unavailable. Both
+    paths return the identical table lookup, just at very different speeds.
+    """
+    lut = get_lut(name)
+    gray = np.asarray(gray)
+    if gray.dtype == np.uint8 and gray.ndim == 2:
+        try:
+            import cv2
+            src = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            return cv2.LUT(src, lut.reshape(1, 256, 3))
+        except Exception:  # noqa: BLE001 - any cv2 issue -> numpy fallback
+            pass
+    return lut[gray]
 
 
 def apply_bronze_colormap(gray):
@@ -311,12 +326,18 @@ def log_to_gray(log_img, log_min, log_max, gamma=1.0):
     """
     log_img = np.asarray(log_img, dtype=np.float32)
     span = max(float(log_max) - float(log_min), 1e-6)
-    norm = (log_img - float(log_min)) / span
-    finite = np.isfinite(norm)
-    norm = np.where(finite, np.clip(norm, 0.0, 1.0), 0.0)
+    # Work in one fresh buffer with in-place ops to avoid the extra full-frame
+    # temporaries (isfinite + where) the readable form allocates. np.clip maps
+    # +/-inf into [0, 1] and leaves NaN as NaN; nan_to_num then sends the
+    # blanked / unfilled NaNs to 0 (black).
+    norm = log_img - float(log_min)
+    norm *= (1.0 / span)
+    np.clip(norm, 0.0, 1.0, out=norm)
     if gamma != 1.0:
-        norm = norm ** float(gamma)
-    return (norm * 255.0).astype(np.uint8)
+        np.power(norm, float(gamma), out=norm)
+    np.nan_to_num(norm, copy=False, nan=0.0)
+    norm *= 255.0
+    return norm.astype(np.uint8)
 
 
 def flatten_across_track(log_img, strength=1.0):
@@ -333,6 +354,11 @@ def flatten_across_track(log_img, strength=1.0):
 
     ``strength`` in [0, 1] blends between no correction (0) and full flattening
     (1). Columns that are entirely blanked (NaN, e.g. nadir) are left untouched.
+
+    The per-column mean is taken over *every* buffered ping. (Estimating it
+    from a strided row subsample is cheaper but makes the correction wobble
+    frame-to-frame on columns with intermittent dropped pings - the starboard
+    shimmer - so we average all rows for a stable result.)
 
     Args:
         log_img: (rows, width) float array of ``log1p(amp)``; NaN = blank.
@@ -352,8 +378,11 @@ def flatten_across_track(log_img, strength=1.0):
         global_mean = float(np.nanmean(col_mean))
     # Per-column offset to remove; 0 where a column has no data (NaN).
     delta = np.where(np.isfinite(col_mean),
-                     (col_mean - global_mean) * float(strength), 0.0)
-    return (log_img - delta[None, :]).astype(np.float32)
+                     (col_mean - global_mean) * float(strength),
+                     0.0).astype(np.float32)
+    # float32 - float32 stays float32, so skip the redundant full-frame copy
+    # that a trailing .astype(float32) would make.
+    return log_img - delta[None, :]
 
 
 def apply_clahe(gray, clip=2.0, grid=8):

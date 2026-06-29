@@ -63,8 +63,9 @@ every knob plus **Reset**, **Save PNG** and **Pause**:
 | Colormap | copper | `copper`, `bronze` or `gray`. |
 
 Rendering only runs while the Sidescan tab is visible (and not paused), so the
-other control tabs cost nothing. **Save PNG** writes the current full-resolution
-waterfall to `~/sonar_data/`.
+other control tabs cost nothing. **Save PNG** opens a Save-As dialog (defaulting
+to `gui/sidescan/saved/` with a timestamped name) and writes the current
+full-resolution waterfall there.
 
 ## 2. Optional headless node
 
