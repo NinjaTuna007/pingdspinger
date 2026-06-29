@@ -18,14 +18,33 @@ from pingdsp_msg.srv import (
     SoundVelocity
 )
 import threading
+from collections import deque
 from datetime import datetime
+
+import numpy as np
+
+# Live sidescan viewing renders inside this GUI (no ROS image topic, so bags
+# are not bloated). It needs PIL + the pure image maths from pingdsp_driver and
+# the Ping3DSS message. If any are missing the control GUI still works; the
+# Sidescan tab just shows why it is unavailable.
+try:
+    from PIL import Image as PILImage, ImageTk
+    from pingdsp_driver import sidescan_image as ssi
+    from pingdsp_msg.msg import Ping3DSS
+    _HAVE_SIDESCAN = True
+    _SS_IMPORT_ERROR = None
+except Exception as _ss_err:  # pragma: no cover - depends on install env
+    PILImage = ImageTk = ssi = Ping3DSS = None
+    _HAVE_SIDESCAN = False
+    _SS_IMPORT_ERROR = _ss_err
+
 
 class SonarControlGUI:
     def __init__(self, node):
         self.node = node
         self.window = tk.Tk()
         self.window.title("3DSS-DX Sonar Control")
-        self.window.geometry("900x700")
+        self.window.geometry("1280x820")
         
         # Status label at top
         self.status_var = tk.StringVar(value="Ready")
@@ -37,7 +56,11 @@ class SonarControlGUI:
         self.notebook = ttk.Notebook(self.window)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=5)
         
-        # Create tabs
+        # Live sidescan state (buffer + renderer) must exist before its tab.
+        self._init_sidescan_state()
+        
+        # Create tabs (Sidescan first so the live waterfall is front and centre)
+        self.create_sidescan_tab()
         self.create_app_tab()
         self.create_sonar_tab()
         self.create_acquisition_tab()
@@ -60,6 +83,9 @@ class SonarControlGUI:
         ttk.Button(console_frame, text="Clear Log", command=self.clear_log).pack(pady=2)
         
         self.log("GUI initialized. Ready to control sonar.")
+        
+        # Subscribe to raw pings and start the live render loop.
+        self._start_sidescan_stream()
     
     def log(self, message):
         """Add a timestamped message to the console log"""
@@ -1385,6 +1411,234 @@ class SonarControlGUI:
         )
         if filename:
             self.record_path_var.set(filename)
+    
+    # ========================================================================
+    # Live Sidescan viewer (renders in-GUI; no ROS image topic -> no bag bloat)
+    # ========================================================================
+    
+    def _init_sidescan_state(self):
+        """Set up the rolling ping buffer, renderer and tunable parameters."""
+        # Display box (the rendered waterfall is scaled to fit, keeping aspect).
+        self.ss_disp_w = 760
+        self.ss_disp_h = 680
+        self._ss_after_id = None
+        self._ss_photo = None  # keep a ref so Tk does not GC the image
+        
+        if not _HAVE_SIDESCAN:
+            return
+        
+        # Tunables, all live via the sliders below. Defaults mirror the old
+        # sidescan_viewer_node so behaviour is identical, just rendered here.
+        self.ss_num_var = tk.IntVar(value=ssi.DEFAULT_NUM_PINGS)
+        self.ss_width_var = tk.IntVar(value=ssi.DEFAULT_TARGET_WIDTH)
+        self.ss_logmin_var = tk.DoubleVar(value=11.5)
+        self.ss_logmax_var = tk.DoubleVar(value=14.5)
+        self.ss_gamma_var = tk.DoubleVar(value=1.0)
+        self.ss_nadir_var = tk.IntVar(value=0)
+        self.ss_flatten_var = tk.DoubleVar(value=0.0)
+        self.ss_clahe_var = tk.DoubleVar(value=0.0)
+        self.ss_despeckle_var = tk.IntVar(value=0)
+        self.ss_colormap_var = tk.StringVar(value=ssi.DEFAULT_COLORMAP)
+        self.ss_rate_var = tk.DoubleVar(value=5.0)
+        self.ss_paused = tk.BooleanVar(value=False)
+        self.ss_clahe_grid = 8
+        
+        self.ss_num_pings = int(self.ss_num_var.get())
+        self.ss_lock = threading.Lock()
+        self.ss_rows = deque(maxlen=self.ss_num_pings)
+        self.ss_ping_count = 0
+        # nadir is applied at render time (so the slider needs no buffer clear);
+        # keep the per-ping processor's own nadir disabled.
+        self.ss_proc = ssi.WaterfallProcessor(int(self.ss_width_var.get()),
+                                              nadir_bins=0)
+    
+    def create_sidescan_tab(self):
+        """Create the live sidescan waterfall tab with all knobs as sliders."""
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Sidescan")
+        self.ss_tab = tab
+        
+        if not _HAVE_SIDESCAN:
+            msg = ("Live sidescan viewing is unavailable.\n\n"
+                   f"Import error: {_SS_IMPORT_ERROR}\n\n"
+                   "Need Pillow + a built/sourced workspace so 'pingdsp_driver'"
+                   " and 'pingdsp_msg' import.")
+            ttk.Label(tab, text=msg, justify="left",
+                      foreground="red").pack(anchor="w", padx=15, pady=15)
+            return
+        
+        # Left: the rendered waterfall. Right: the controls.
+        body = ttk.Frame(tab)
+        body.pack(fill="both", expand=True)
+        
+        image_frame = ttk.LabelFrame(body, text="Waterfall (newest on top)",
+                                     padding=5)
+        image_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+        self.ss_image_label = ttk.Label(image_frame,
+                                        text="Waiting for pings on sonar/ping...",
+                                        anchor="center")
+        self.ss_image_label.pack(fill="both", expand=True)
+        
+        ctrl = ttk.LabelFrame(body, text="Visualisation", padding=8)
+        ctrl.pack(side="right", fill="y", padx=5, pady=5)
+        
+        def add_slider(label, var, lo, hi, res, cmd=None):
+            row = ttk.Frame(ctrl)
+            row.pack(fill="x", pady=1)
+            ttk.Label(row, text=label, width=15).pack(side="left")
+            tk.Scale(row, variable=var, from_=lo, to=hi, resolution=res,
+                     orient="horizontal", length=210, command=cmd).pack(
+                         side="left", fill="x", expand=True)
+        
+        add_slider("Pings (rows)", self.ss_num_var, 64, 4096, 64,
+                   self._ss_set_num)
+        add_slider("Width (px)", self.ss_width_var, 128, 4096, 128,
+                   self._ss_set_width)
+        add_slider("Log min", self.ss_logmin_var, 6.0, 18.0, 0.1)
+        add_slider("Log max", self.ss_logmax_var, 6.0, 20.0, 0.1)
+        add_slider("Gamma", self.ss_gamma_var, 0.2, 3.0, 0.05)
+        add_slider("Nadir bins", self.ss_nadir_var, 0, 512, 1)
+        add_slider("Flatten", self.ss_flatten_var, 0.0, 1.0, 0.05)
+        add_slider("CLAHE clip", self.ss_clahe_var, 0.0, 8.0, 0.5)
+        add_slider("Despeckle", self.ss_despeckle_var, 0, 9, 1)
+        add_slider("Refresh (Hz)", self.ss_rate_var, 1.0, 15.0, 1.0)
+        
+        cmap_row = ttk.Frame(ctrl)
+        cmap_row.pack(fill="x", pady=4)
+        ttk.Label(cmap_row, text="Colormap", width=15).pack(side="left")
+        ttk.Combobox(cmap_row, textvariable=self.ss_colormap_var,
+                     values=["copper", "bronze", "gray"], state="readonly",
+                     width=12).pack(side="left")
+        
+        btns = ttk.Frame(ctrl)
+        btns.pack(fill="x", pady=8)
+        ttk.Button(btns, text="Reset", command=self.ss_reset).pack(
+            side="left", padx=3)
+        ttk.Button(btns, text="Save PNG", command=self.ss_save).pack(
+            side="left", padx=3)
+        ttk.Checkbutton(btns, text="Pause", variable=self.ss_paused).pack(
+            side="left", padx=3)
+        
+        self.ss_info_var = tk.StringVar(value="no pings yet")
+        ttk.Label(ctrl, textvariable=self.ss_info_var,
+                  foreground="grey").pack(anchor="w", pady=(6, 0))
+    
+    def _start_sidescan_stream(self):
+        """Subscribe to raw pings and kick off the periodic render loop."""
+        if not _HAVE_SIDESCAN:
+            return
+        # Match the driver's ping publisher QoS (default reliable, depth 10).
+        self.ss_sub = self.node.create_subscription(
+            Ping3DSS, 'sonar/ping', self.ss_ping_callback, 10)
+        self._ss_after_id = self.window.after(300, self.ss_refresh)
+    
+    def _ss_set_num(self, _=None):
+        """Resize the ping buffer in place, keeping the most recent rows."""
+        n = max(int(self.ss_num_var.get()), 1)
+        with self.ss_lock:
+            self.ss_num_pings = n
+            self.ss_rows = deque(self.ss_rows, maxlen=n)
+    
+    def _ss_set_width(self, _=None):
+        """Change render width; rows are width-fixed so the buffer is cleared."""
+        w = max(int(self.ss_width_var.get()), 1)
+        with self.ss_lock:
+            self.ss_proc.set_width(w)
+            self.ss_rows.clear()
+    
+    def ss_ping_callback(self, msg):
+        """Bin one ping to a log row and push it onto the buffer (ROS thread)."""
+        try:
+            port = np.asarray(msg.port_sidescan_samples, dtype=np.float32)
+            stbd = np.asarray(msg.starboard_sidescan_samples, dtype=np.float32)
+            row = self.ss_proc.process_row(port, stbd)
+            if row is None:
+                return
+            with self.ss_lock:
+                self.ss_rows.appendleft(row)
+                self.ss_ping_count += 1
+        except Exception:  # noqa: BLE001 - never let a bad ping kill the GUI
+            pass
+    
+    def ss_render_bgr(self):
+        """Build the current waterfall as a BGR uint8 image, or None."""
+        with self.ss_lock:
+            rows = list(self.ss_rows)
+            num = self.ss_num_pings
+        if not rows:
+            return None
+        log_img = ssi.stack_log_rows(rows, num)
+        if log_img is None:
+            return None
+        # Exclude the near-nadir band from the across-track stats and black it
+        # out, without having to clear the buffer when the slider moves.
+        nb = int(self.ss_nadir_var.get())
+        if nb > 0 and 2 * nb < log_img.shape[1]:
+            c = log_img.shape[1] // 2
+            log_img[:, c - nb:c + nb] = np.nan
+        fs = float(self.ss_flatten_var.get())
+        if fs > 0.0:
+            log_img = ssi.flatten_across_track(log_img, fs)
+        gray = ssi.log_to_gray(log_img, float(self.ss_logmin_var.get()),
+                               float(self.ss_logmax_var.get()),
+                               float(self.ss_gamma_var.get()))
+        cc = float(self.ss_clahe_var.get())
+        if cc > 0.0:
+            gray = ssi.apply_clahe(gray, cc, self.ss_clahe_grid)
+            gray = ssi.blank_nadir(gray, nb)
+        ds = int(self.ss_despeckle_var.get())
+        if ds >= 3:
+            if ds % 2 == 0:
+                ds += 1
+            gray = ssi.despeckle_gray(gray, ds)
+        return ssi.apply_colormap(gray, self.ss_colormap_var.get())
+    
+    def ss_refresh(self):
+        """Render the waterfall into the tab; reschedules itself (main thread)."""
+        try:
+            visible = str(self.notebook.select()) == str(self.ss_tab)
+            if visible and not self.ss_paused.get():
+                bgr = self.ss_render_bgr()
+                if bgr is not None:
+                    rgb = np.ascontiguousarray(bgr[:, :, ::-1])
+                    img = PILImage.fromarray(rgb)
+                    img.thumbnail((self.ss_disp_w, self.ss_disp_h))
+                    self._ss_photo = ImageTk.PhotoImage(img)
+                    self.ss_image_label.configure(image=self._ss_photo, text="")
+                    with self.ss_lock:
+                        filled = len(self.ss_rows)
+                    self.ss_info_var.set(
+                        f"pings={self.ss_ping_count}  buffer={filled}/"
+                        f"{self.ss_num_pings}  render={bgr.shape[1]}x"
+                        f"{bgr.shape[0]}")
+        except Exception as e:  # noqa: BLE001 - keep the loop alive
+            self.node.get_logger().warn(f"sidescan render error: {e}")
+        finally:
+            hz = max(float(self.ss_rate_var.get()), 0.5)
+            self._ss_after_id = self.window.after(
+                max(int(1000.0 / hz), 30), self.ss_refresh)
+    
+    def ss_reset(self):
+        """Clear the buffer and rebuild the waterfall from scratch."""
+        with self.ss_lock:
+            self.ss_rows.clear()
+            self.ss_ping_count = 0
+        self.log("Sidescan buffer reset.")
+    
+    def ss_save(self):
+        """Write the current full-resolution waterfall to ~/sonar_data."""
+        bgr = self.ss_render_bgr()
+        if bgr is None:
+            self.log("Sidescan: nothing to save yet.")
+            return
+        import os
+        import cv2
+        out_dir = os.path.expanduser("~/sonar_data")
+        os.makedirs(out_dir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(out_dir, f"sidescan_{stamp}.png")
+        cv2.imwrite(path, bgr)
+        self.log(f"Saved sidescan PNG: {path}")
     
     def run(self):
         self.window.mainloop()

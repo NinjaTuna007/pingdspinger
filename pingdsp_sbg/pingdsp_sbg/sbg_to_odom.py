@@ -30,6 +30,7 @@ import rclpy
 from rclpy.node import Node
 from sbg_driver.msg import (SbgEkfEuler, SbgEkfNav, SbgEkfQuat, SbgImuData,
                             SbgImuShort)
+from sensor_msgs.msg import NavSatFix, NavSatStatus
 from std_msgs.msg import Float32
 from tf2_ros import TransformBroadcaster
 from tf2_ros.buffer import Buffer
@@ -57,6 +58,10 @@ class SbgToOdom(Node):
         self.declare_parameter('publish_rate', 10.0)
         self.declare_parameter('publish_tf', True)
         self.declare_parameter('publish_covariance', True)
+        # Also republish the raw EKF fix as sensor_msgs/NavSatFix so Foxglove's
+        # Map panel (and other geo tools) can plot the rig on a real map.
+        self.declare_parameter('publish_navsatfix', True)
+        self.declare_parameter('navsatfix_topic', 'fix')
 
         prefix = self.get_parameter('frame_prefix').value
         nav_topic = self.get_parameter('ekf_nav_topic').value
@@ -70,6 +75,9 @@ class SbgToOdom(Node):
         publish_rate = float(self.get_parameter('publish_rate').value)
         self.publish_tf = bool(self.get_parameter('publish_tf').value)
         self.publish_cov = bool(self.get_parameter('publish_covariance').value)
+        self.publish_navsat = bool(
+            self.get_parameter('publish_navsatfix').value)
+        navsatfix_topic = self.get_parameter('navsatfix_topic').value
 
         self.odom_frame = '{}/odom'.format(prefix)
         self.base_frame = '{}/base_link'.format(prefix)
@@ -90,6 +98,7 @@ class SbgToOdom(Node):
         self.y = 0.0
         self.latitude = 0.0
         self.longitude = 0.0
+        self.altitude = 0.0
         self.q_sbg_xyzw = (0.0, 0.0, 0.0, 1.0)
         self.q_enu_xyzw = (0.0, 0.0, 0.0, 1.0)
         self.heading_deg = 0.0
@@ -106,6 +115,9 @@ class SbgToOdom(Node):
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self.odom_pub = self.create_publisher(Odometry, odom_topic, 10)
+        self.navsat_pub = (
+            self.create_publisher(NavSatFix, navsatfix_topic, 10)
+            if self.publish_navsat else None)
         self.heading_pub = self.create_publisher(Float32, 'heading', 10)
         self.course_pub = self.create_publisher(Float32, 'course', 10)
         self.speed_pub = self.create_publisher(Float32, 'speed', 10)
@@ -152,26 +164,59 @@ class SbgToOdom(Node):
 
     def nav_callback(self, msg: SbgEkfNav):
         """Convert a fix to a local ENU position + body velocity."""
-        if not self._ensure_utm_offset():
-            return
-        easting, northing, _, _ = st.latlon_to_utm(
-            msg.latitude, msg.longitude)
-        self.x = easting - self.x_offset
-        self.y = northing - self.y_offset
         self.latitude = msg.latitude
         self.longitude = msg.longitude
-
-        vel_ned = (msg.velocity.x, msg.velocity.y, msg.velocity.z)
-        self.vx, self.vy, self.vz = st.sbg_velocity_to_body_enu(
-            self.q_sbg_xyzw, vel_ned)
-
+        self.altitude = msg.altitude
         self.pos_acc = (msg.position_accuracy.x,
                         msg.position_accuracy.y,
                         msg.position_accuracy.z)
         self.vel_acc = (msg.velocity_accuracy.x,
                         msg.velocity_accuracy.y,
                         msg.velocity_accuracy.z)
+
+        # NavSatFix is an absolute geographic fix - publish it regardless of the
+        # datum so the map shows position even before the local odom locks.
+        if self.navsat_pub is not None:
+            self._publish_navsatfix(msg)
+
+        if not self._ensure_utm_offset():
+            return
+        easting, northing, _, _ = st.latlon_to_utm(
+            msg.latitude, msg.longitude)
+        self.x = easting - self.x_offset
+        self.y = northing - self.y_offset
+
+        vel_ned = (msg.velocity.x, msg.velocity.y, msg.velocity.z)
+        self.vx, self.vy, self.vz = st.sbg_velocity_to_body_enu(
+            self.q_sbg_xyzw, vel_ned)
         self.have_position = True
+
+    def _publish_navsatfix(self, msg: SbgEkfNav):
+        """Republish the EKF fix as sensor_msgs/NavSatFix (geo map tools)."""
+        fix = NavSatFix()
+        fix.header.stamp = msg.header.stamp
+        fix.header.frame_id = self.base_frame
+        status = NavSatStatus()
+        status.service = NavSatStatus.SERVICE_GPS
+        # solution_mode == 4 is the full NAV_POSITION solution.
+        if msg.status.solution_mode == 4 and msg.status.position_valid:
+            status.status = NavSatStatus.STATUS_FIX
+        else:
+            status.status = NavSatStatus.STATUS_NO_FIX
+        fix.status = status
+        fix.latitude = float(msg.latitude)
+        fix.longitude = float(msg.longitude)
+        fix.altitude = float(msg.altitude)
+        # SBG accuracy is NED 1-sigma (x=North, y=East, z=Down). NavSatFix
+        # covariance is ENU row-major, so diagonal = [East, North, Up].
+        ax, ay, az = self.pos_acc
+        cov = [0.0] * 9
+        cov[0] = ay * ay   # East
+        cov[4] = ax * ax   # North
+        cov[8] = az * az   # Up
+        fix.position_covariance = cov
+        fix.position_covariance_type = NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
+        self.navsat_pub.publish(fix)
 
     def _set_attitude(self, q_sbg_xyzw, att_acc):
         """Store an attitude (SBG NED quat) and derive the ENU pose/heading."""

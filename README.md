@@ -10,7 +10,7 @@ field bringup.
 
 | Package | What it does |
 | --- | --- |
-| `pingdsp_driver` | 3DSS-DX TCP driver (`tdss_driver`), ASCII control services (`sonar_control_node`), point-cloud filter/recorder, and the live `sidescan_viewer_node`. |
+| `pingdsp_driver` | 3DSS-DX TCP driver (`tdss_driver`), ASCII control services (`sonar_control_node`), point-cloud filter/recorder, and an optional headless `sidescan_viewer_node` (live sidescan is normally viewed in the control GUI instead). |
 | `pingdsp_msg` | `Ping3DSS` message + the sonar-control service definitions. |
 | `pingdsp_sbg` | SBG Ellipse (NED) → ROS (ENU) odometry + TF: `sbg_to_odom_initializer` and `sbg_to_odom`, using `transforms3d` and `utm`. |
 
@@ -49,9 +49,11 @@ MODE=sim ./scripts/pingdsp_bringup.sh   # replay a network capture (pcap) instea
 Creates a tmux session `pingdsp` with three windows:
 
 1. **sonar** – `3dss.launch` (the real driver). Real: connects to the sonar over
-   TCP + control GUI. Sim: connects to the local replayer (control off), and the
-   second pane runs the pcap replayer.
-2. **viz** – Foxglove bridge and the live `sidescan_viewer_node`.
+   TCP + ASCII control services. Sim: connects to the local replayer (control
+   off), and the second pane runs the pcap replayer.
+2. **viz** – Foxglove bridge and the 3DSS-DX control GUI. The GUI's **Sidescan**
+   tab renders the live waterfall in-app (sliders for every knob) — *no ROS
+   image topic*, so bags are not bloated (`ENABLE_GUI=false` to skip it).
 3. **sbg** – `sbg.launch` (real `sbg_device` UDP driver + odom stack). Identical
    in both modes; in sim the driver simply ingests the replayed UDP datagrams.
 
@@ -88,22 +90,29 @@ pcap_file:=...` (see [`docs/SBG_INTEGRATION.md`](docs/SBG_INTEGRATION.md)).
 # Sonar driver + ASCII control services
 ros2 launch pingdsp_driver 3dss.launch                 # set sonar_host in 3dss_params.yaml
 
-# Live sidescan waterfall image (decoupled from the driver / bags)
-ros2 launch pingdsp_driver sidescan_viewer.launch
+# Control GUI (incl. live Sidescan tab — renders in-app, no image topic)
+python3 gui/sonar_control_gui.py
 
 # SBG INS -> /pingdsp/odom + TF (utm -> pingdsp/odom -> pingdsp/base_link)
 ros2 launch pingdsp_sbg sbg.launch
 ```
 
-### Sidescan viewer (runtime-tunable)
+### Sidescan viewing (runtime-tunable, no topic)
 
-The driver no longer publishes a rendered sonar image (it bloated bags). Instead
-`sidescan_viewer_node` consumes raw `Ping3DSS` samples and renders a waterfall
-over the last `num_pings`, retunable live without a relaunch:
+The driver no longer publishes a rendered sonar image (it bloated bags). The
+waterfall is rendered **live in the control GUI's Sidescan tab** straight from
+the raw `Ping3DSS` samples, with a slider for every knob (pings, width, log
+min/max, gamma, nadir, flatten, CLAHE, despeckle, colormap) plus Reset/Save/
+Pause. Nothing is published, so the raw samples in the bag are the only sonar
+data recorded.
+
+An optional headless `sidescan_viewer_node` can still publish the waterfall as
+`sonar/sidescan_image` for Foxglove/rviz if you want it (it is *not* started by
+the bringup, and a `ros2 bag record -a` would capture that image):
 
 ```bash
+ros2 launch pingdsp_driver sidescan_viewer.launch
 ros2 param set /sidescan_viewer_node num_pings 500
-ros2 param set /sidescan_viewer_node target_width 1200
 ```
 
 Details: [`docs/SIDESCAN_VIEWER.md`](docs/SIDESCAN_VIEWER.md).

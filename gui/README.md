@@ -25,14 +25,21 @@ Simple standalone GUI for controlling the PingDSP 3DSS-DX sonar via ROS 2 servic
    ```
 
 ## Features
-- Set sonar range (1-300 m)
-- Set gain (0-40 dB)
-- Set sound velocity (1300-1700 m/s)
-- Trigger a ping
-- Real-time status feedback
+- Tabs for app/sonar control, acquisition, transmit, processing, sidescan3d,
+  bathymetry, sound velocity, file, record and baud settings (all via the
+  `/sonar/*` services from `sonar_control_node`).
+- **Sidescan tab** — a live sidescan waterfall rendered *inside the GUI* from the
+  raw `Ping3DSS` samples (`sonar/ping`). It publishes **no image topic** (so bags
+  are not bloated), and every visualisation knob is a live slider: pings, width,
+  log min/max, gamma, nadir bins, flatten, CLAHE, despeckle, refresh rate and
+  colormap, plus Reset / Save PNG / Pause. Rendering only runs while the tab is
+  visible.
+- Real-time status feedback + console log.
 
 ## Requirements
-- ROS 2 (rclpy, std_srvs, pingdsp_msg)
-- Python 3 with tkinter (usually pre-installed)
-
-No additional dependencies needed - tkinter is built into Python!
+- ROS 2 (rclpy, std_srvs, pingdsp_msg) and, for the Sidescan tab, the built
+  `pingdsp_driver` package (for `pingdsp_driver.sidescan_image`) on the path.
+- Python 3 with tkinter (usually pre-installed).
+- For the Sidescan tab only: `numpy`, `Pillow` (PIL) and `opencv-python` (cv2,
+  used by the optional CLAHE/despeckle and Save PNG). If any are missing the
+  control tabs still work and the Sidescan tab explains what is unavailable.

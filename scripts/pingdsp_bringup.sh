@@ -5,7 +5,8 @@
 #   1. sonar : 3DSS-DX driver (3dss.launch). MODE=real connects to the live
 #              sonar over TCP; MODE=sim points the driver at the local replayer
 #              and runs the pcap replay in the second pane.
-#   2. viz   : Foxglove bridge + live sidescan viewer node (sidescan_viewer.launch)
+#   2. viz   : Foxglove bridge + 3DSS-DX control GUI. The GUI's "Sidescan" tab
+#              renders the live waterfall in-app and exposes every visualisation knob as a slider.
 #   3. sbg   : SBG driver + odom initializer + sbg_to_odom (sbg.launch). Same in
 #              both modes -- in sim the driver simply ingests the replayed UDP.
 #
@@ -59,6 +60,7 @@ PCAP_START="${PCAP_START:-0}"          # skip to this t_rel (s); sonar starts ~1
 
 # --- Common ----------------------------------------------------------------
 FOXGLOVE_PORT="${FOXGLOVE_PORT:-8765}"       # foxglove bridge websocket port
+ENABLE_GUI="${ENABLE_GUI:-true}"             # launch the 3DSS-DX control GUI (incl. live Sidescan tab)
 ENABLE_SBG="${ENABLE_SBG:-auto}"             # true | false | auto (auto: on, but off for sonar-only pcaps)
 ENABLE_RECORDER="${ENABLE_RECORDER:-false}"  # run pointcloud_recorder: filtered cloud -> PLY/XYZ/PCD on
                                              #   Ctrl+C (output dir/topic/frame in config/recorder_params.yaml)
@@ -169,7 +171,9 @@ else
 fi
 
 FOXGLOVE_CMD="ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=$FOXGLOVE_PORT"
-VIEWER_CMD="ros2 launch pingdsp_driver sidescan_viewer.launch"
+# Sidescan is viewed live in the control GUI's "Sidescan" tab, not as an image
+# topic, so nothing here publishes sensor_msgs/Image (bags stay lean).
+GUI_CMD="python3 '$PKG_DIR/gui/sonar_control_gui.py'"
 
 SBG_ODOM_CMD="sleep 3; ros2 topic echo /pingdsp/heading std_msgs/msg/Float32 --field data"
 
@@ -198,11 +202,15 @@ else
     pane "$SESSION:sonar.1" "$SONAR_STATUS_CMD"
 fi
 
-# --- Window 2: viz (foxglove + sidescan viewer) ---
+# --- Window 2: viz (foxglove + control GUI with live Sidescan tab) ---
 tmux new-window -t "$SESSION" -n viz
 tmux split-window -h -t "$SESSION:viz"
 pane "$SESSION:viz.0" "$FOXGLOVE_CMD"
-pane "$SESSION:viz.1" "$VIEWER_CMD"
+if [[ "$ENABLE_GUI" == "true" ]]; then
+    pane "$SESSION:viz.1" "$GUI_CMD"
+else
+    pane "$SESSION:viz.1" "echo 'Control GUI disabled (ENABLE_GUI=false)'"
+fi
 
 # --- Window 3: sbg (UDP driver + odom; in sim it ingests the replayed UDP) ---
 tmux new-window -t "$SESSION" -n sbg
