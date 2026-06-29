@@ -107,6 +107,11 @@ subscribers and bag splits still receive them.
   the matching dynamic TF, plus `pingdsp/heading`, `pingdsp/course`,
   `pingdsp/speed` and `pingdsp/latlon`. Pose/twist covariance is filled from the
   SBG 1-sigma accuracy fields.
+* Per `SbgEkfNav` fix it also republishes the raw geographic fix as
+  `sensor_msgs/NavSatFix` on `pingdsp/fix` (lat/lon/alt + diagonal covariance
+  from the position accuracy). This is what Foxglove's **Map** panel plots, and
+  it streams even before the local odom datum locks (the fix is absolute).
+  Toggle with `publish_navsatfix` / rename with `navsatfix_topic`.
 
 ## Frame conventions (the math)
 

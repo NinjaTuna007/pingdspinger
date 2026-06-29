@@ -38,3 +38,8 @@ sbg_to_odom:
     publish_tf: true
     # Populate Odometry covariance from SBG accuracy fields (1-sigma).
     publish_covariance: true
+    # Republish the EKF fix as sensor_msgs/NavSatFix (relative topic) so
+    # Foxglove's Map panel can plot the rig on a real map. Absolute lat/lon,
+    # so it publishes even before the local odom datum locks.
+    publish_navsatfix: true
+    navsatfix_topic: 'fix'

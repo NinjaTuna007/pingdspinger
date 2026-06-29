@@ -153,6 +153,7 @@ Sonar TCP ─► tdss_driver ─► /sonar/ping ─► sidescan_viewer_node ─�
 SBG UDP ─► sbg_device ─► /pingdsp/sbg/{ekf_nav, ekf_euler, imu_short, ...}
               ├► sbg_to_odom_initializer ─► static TF datum
               └► sbg_to_odom ─► /pingdsp/odom (+ dynamic TF, heading/course/speed/latlon)
+                 + /pingdsp/fix (sensor_msgs/NavSatFix, for Foxglove Map)
                  (attitude from ekf_euler, gyro from imu_short; no ekf_quat needed)
 ```
 
