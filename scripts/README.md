@@ -75,6 +75,8 @@ MODE=sim PCAP_SPEED=4.0 ENABLE_GUI=false ./scripts/pingdsp_bringup.sh
 | `PCAP_START` | `0` | sim | Skip to this capture-relative time (s). Handy: sonar starts ~18.4 s into `live_sensor.pcap`. |
 | `FOXGLOVE_PORT` | `8765` | both | Foxglove bridge websocket port. |
 | `ENABLE_GUI` | `true` | both | Launch the 3DSS-DX control GUI (incl. live Sidescan tab). |
+| `ENABLE_VIEWER` | `true` | both | Run `sidescan_viewer_node`: a small, low-rate `sonar/sidescan_image` (2 Hz, 512×1024 bgr8 ≈ 1.5 MB/frame) for Foxglove **and** bags. Knobs match the GUI's default look (`flatten 0.70`, `clahe 0.5`, copper); tune live with `ros2 param set /sidescan_viewer_node …`. |
+| `ENABLE_CLICKED` | `true` | both | Run `clicked_point_to_navsat`: turns Foxglove/RViz `/clicked_point` into a geo-referenced `clicked_fix` (`sensor_msgs/NavSatFix`), anchored off the live `pingdsp/fix` or `sonar/fix` + TF. |
 | `ENABLE_SBG` | `auto` | both | `true` / `false` / `auto`. `auto` = on, but **off** for sonar-only pcaps. |
 | `ENABLE_RECORDER` | `false` | both | Run `pointcloud_recorder`: dumps the filtered cloud to PLY/XYZ/PCD on `Ctrl+C` (paths in `config/recorder_params.yaml`). |
 | `REQUIRE_NAV_FIX` | `auto` | both | Gate the odom datum on a full GNSS fix (`solution_mode==4`). `auto` = `false` in sim (bench captures have no fix), `true` in real. |

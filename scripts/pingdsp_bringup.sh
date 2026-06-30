@@ -61,6 +61,9 @@ PCAP_START="${PCAP_START:-0}"          # skip to this t_rel (s); sonar starts ~1
 # --- Common ----------------------------------------------------------------
 FOXGLOVE_PORT="${FOXGLOVE_PORT:-8765}"       # foxglove bridge websocket port
 ENABLE_GUI="${ENABLE_GUI:-true}"             # launch the 3DSS-DX control GUI (incl. live Sidescan tab)
+ENABLE_VIEWER="${ENABLE_VIEWER:-true}"       # run sidescan_viewer_node: low-rate, small sonar/sidescan_image
+                                             #   for Foxglove + bags (2 Hz, 512x1024 by default)
+ENABLE_CLICKED="${ENABLE_CLICKED:-true}"     # run clicked_point_to_navsat: /clicked_point -> clicked_fix (NavSatFix)
 ENABLE_SBG="${ENABLE_SBG:-auto}"             # true | false | auto (auto: on, but off for sonar-only pcaps)
 ENABLE_RECORDER="${ENABLE_RECORDER:-false}"  # run pointcloud_recorder: filtered cloud -> PLY/XYZ/PCD on
                                              #   Ctrl+C (output dir/topic/frame in config/recorder_params.yaml)
@@ -173,9 +176,13 @@ else
 fi
 
 FOXGLOVE_CMD="ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=$FOXGLOVE_PORT"
-# Sidescan is viewed live in the control GUI's "Sidescan" tab, not as an image
-# topic, so nothing here publishes sensor_msgs/Image (bags stay lean).
+# Live sidescan is also viewable in the control GUI's "Sidescan" tab. The
+# viewer node here additionally publishes a small, low-rate sonar/sidescan_image
+# (so it can be seen in Foxglove and recorded) without bloating the bag.
 GUI_CMD="python3 '$PKG_DIR/gui/sonar_control_gui.py'"
+VIEWER_CMD="ros2 run pingdsp_driver sidescan_viewer_node"
+# Bridges Foxglove/RViz '/clicked_point' to a geo-referenced NavSatFix.
+CLICKED_CMD="ros2 run pingdsp_driver clicked_point_to_navsat"
 
 SBG_ODOM_CMD="sleep 3; ros2 topic echo /pingdsp/heading std_msgs/msg/Float32 --field data"
 
@@ -194,24 +201,38 @@ fi
 
 tmux -2 new-session -d -s "$SESSION" -x 220 -y 50
 
-# --- Window 1: sonar (driver; sim adds the pcap replayer in pane 2) ---
+# --- Window 1: sonar (driver; pane 2 = pcap replayer/status; pane 3 = viewer) ---
 tmux rename-window -t "$SESSION:0" sonar
 tmux split-window -h -t "$SESSION:sonar"
-pane "$SESSION:sonar.0" "$SONAR_CMD"
 if [[ "$MODE" == "sim" ]]; then
     pane "$SESSION:sonar.1" "$REPLAY_CMD"
 else
     pane "$SESSION:sonar.1" "$SONAR_STATUS_CMD"
 fi
+# Sidescan viewer node below the replayer/status pane.
+tmux split-window -v -t "$SESSION:sonar.1"
+if [[ "$ENABLE_VIEWER" == "true" ]]; then
+    pane "$SESSION:sonar.2" "$VIEWER_CMD"
+else
+    pane "$SESSION:sonar.2" "echo 'Sidescan viewer disabled (ENABLE_VIEWER=false)'"
+fi
+pane "$SESSION:sonar.0" "$SONAR_CMD"
 
-# --- Window 2: viz (foxglove + control GUI with live Sidescan tab) ---
+# --- Window 2: viz (foxglove + clicked->navsat + control GUI) ---
 tmux new-window -t "$SESSION" -n viz
 tmux split-window -h -t "$SESSION:viz"
+# Clicked-point -> NavSatFix bridge, alongside the Foxglove bridge.
+tmux split-window -v -t "$SESSION:viz.1"
 pane "$SESSION:viz.0" "$FOXGLOVE_CMD"
-if [[ "$ENABLE_GUI" == "true" ]]; then
-    pane "$SESSION:viz.1" "$GUI_CMD"
+if [[ "$ENABLE_CLICKED" == "true" ]]; then
+    pane "$SESSION:viz.1" "$CLICKED_CMD"
 else
-    pane "$SESSION:viz.1" "echo 'Control GUI disabled (ENABLE_GUI=false)'"
+    pane "$SESSION:viz.1" "echo 'Clicked-point bridge disabled (ENABLE_CLICKED=false)'"
+fi
+if [[ "$ENABLE_GUI" == "true" ]]; then
+    pane "$SESSION:viz.2" "$GUI_CMD"
+else
+    pane "$SESSION:viz.2" "echo 'Control GUI disabled (ENABLE_GUI=false)'"
 fi
 
 # --- Window 3: sbg (UDP driver + odom; in sim it ingests the replayed UDP) ---

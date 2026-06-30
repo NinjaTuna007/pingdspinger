@@ -19,7 +19,7 @@ bringup starts):
    `ros2 bag record -a` will capture it — only run it when you want that. It is
    **not** launched by `pingdsp_bringup.sh`.
 
-Both share the same unit-tested numpy/OpenCV-capable maths in
+Both share the same pure/numpy, unit-tested maths in
 `pingdsp_driver/sidescan_image.py`.
 
 ## The render pipeline (shared)
@@ -51,16 +51,16 @@ every knob plus **Reset**, **Save PNG** and **Pause**:
 | Slider | Default | Meaning |
 | --- | --- | --- |
 | Pings (rows) | 2048 | Rows kept in the waterfall (ring buffer). |
-| Width (px) | 2048 | Render width; raw swath is bin-averaged to this; kept pings are re-binned live. |
+| Width (px) | 2048 | Render width; raw swath is bin-averaged to this (clears buffer). |
 | Log min | 11.5 | `log1p(amp)` mapped to black. Raise for more contrast. |
-| Log max | 15.0 | `log1p(amp)` mapped to white. Lower for more contrast. |
+| Log max | 14.5 | `log1p(amp)` mapped to white. Lower for more contrast. |
 | Gamma | 1.0 | `<1` brightens mid-tones, `>1` darkens. |
 | Nadir bins | 0 | Pixels each side of nadir to blank (0 = keep all). |
-| Flatten | 0.7 | Across-track gain flattening, 0=off..1=full. |
-| CLAHE clip | 0.5 | Local-contrast (CLAHE) clip limit (0 = off). |
+| Flatten | 0.0 | Across-track gain flattening, 0=off..1=full (biggest lever; ~0.85 is a good start). |
+| CLAHE clip | 0.0 | Local-contrast (CLAHE) clip limit (0 = off, ~2–4 typical). |
 | Despeckle | 0 | Median despeckle kernel (0 = off, applied at odd ≥ 3). |
-| Refresh (Hz) | 15 | Redraw rate. |
-| Colormap | bronze | `copper`, `bronze` or `gray`. |
+| Refresh (Hz) | 5 | Redraw rate. |
+| Colormap | copper | `copper`, `bronze` or `gray`. |
 
 Rendering only runs while the Sidescan tab is visible (and not paused), so the
 other control tabs cost nothing. **Save PNG** opens a Save-As dialog (defaulting
@@ -71,10 +71,10 @@ full-resolution waterfall there.
 
 ```bash
 ros2 launch pingdsp_driver sidescan_viewer.launch
-ros2 launch pingdsp_driver sidescan_viewer.launch params_file:=/abs/path/to/sidescan_params.yaml
+ros2 launch pingdsp_driver sidescan_viewer.launch num_pings:=500 log_min:=12.0
 ```
 
-Every knob above maps to a node parameter (re-applied live, no relaunch). Launch-time defaults come from the YAML file, so use `params_file` for another startup preset:
+Every knob above maps to a node parameter (re-applied live, no relaunch):
 
 ```bash
 ros2 param set /sidescan_viewer_node flatten_strength 0.85

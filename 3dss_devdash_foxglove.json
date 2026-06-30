@@ -1,0 +1,210 @@
+{
+  "configById": {
+    "3D!2wbfn6p": {
+      "cameraState": {
+        "perspective": true,
+        "distance": 84.09478170831474,
+        "phi": 56.67475613165985,
+        "thetaOffset": 6.281603936110267,
+        "targetOffset": [
+          18.971033691454927,
+          11.627619480520888,
+          10.070678584958523
+        ],
+        "target": [
+          0,
+          0,
+          0
+        ],
+        "targetOrientation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "fovy": 45,
+        "near": 0.5,
+        "far": 5000
+      },
+      "followMode": "follow-pose",
+      "followTf": "pingdsp/odom",
+      "fixedFrame": "utm",
+      "scene": {
+        "transforms": {
+          "axisSize": 5,
+          "lineWidth": 2,
+          "labelSize": 1
+        }
+      },
+      "transforms": {
+        "frame:utm_34_V": {
+          "visible": true
+        },
+        "frame:utm": {
+          "visible": true
+        },
+        "frame:sonar": {
+          "visible": true
+        }
+      },
+      "topics": {
+        "/sonar/bathymetry_filtered": {
+          "visible": true,
+          "colorField": "z",
+          "colorMode": "colormap",
+          "colorMap": "turbo",
+          "decayTime": 99999999999
+        },
+        "/sonar/bathymetry": {
+          "decayTime": 60,
+          "visible": false,
+          "colorField": "z",
+          "colorMode": "colormap",
+          "colorMap": "turbo"
+        },
+        "/move_base_simple/goal": {
+          "visible": false
+        },
+        "/sonar/pose": {
+          "visible": false,
+          "axisScale": 2
+        },
+        "/vehicle/position": {
+          "visible": false
+        }
+      },
+      "layers": {
+        "grid": {
+          "visible": true,
+          "drawBehind": false,
+          "instanceId": "3f47a47f-0365-432c-b8c2-649980f17d6b",
+          "layerId": "foxglove.Grid",
+          "size": 10,
+          "divisions": 10,
+          "lineWidth": 1,
+          "color": "#248eff",
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0
+          ]
+        },
+        "0784e35f-81a8-4f50-816d-1250cf59f500": {
+          "visible": true,
+          "serverConfig": "satellite",
+          "instanceId": "0784e35f-81a8-4f50-816d-1250cf59f500",
+          "layerId": "foxglove.TiledMap",
+          "zPosition": 0,
+          "drawBehind": true,
+          "order": 1,
+          "opacity": 0.7
+        }
+      },
+      "publish": {
+        "type": "point",
+        "poseTopic": "/move_base_simple/goal",
+        "pointTopic": "/clicked_point",
+        "poseEstimateTopic": "/initialpose",
+        "poseEstimateXDeviation": 0.5,
+        "poseEstimateYDeviation": 0.5,
+        "poseEstimateThetaDeviation": 0.26179939
+      },
+      "synchronize": false,
+      "imageMode": {},
+      "enuFrameId": "pingdsp/odom"
+    },
+    "map!3us9amv": {
+      "zoomLevel": 20,
+      "customTileUrl": "",
+      "disabledTopics": [],
+      "followTopic": "/pingdsp/fix",
+      "followFrame": "",
+      "layer": "satellite",
+      "topicColors": {},
+      "maxNativeZoom": 18,
+      "topicConfig": {
+        "/pingdsp/fix": {
+          "historyMode": "none",
+          "pointSize": 6
+        },
+        "/sonar/fix": {
+          "historyMode": "none",
+          "pointSize": 6
+        }
+      },
+      "layers": []
+    },
+    "Image!32n6a07": {
+      "cameraState": {
+        "distance": 20,
+        "perspective": true,
+        "phi": 60,
+        "target": [
+          0,
+          0,
+          0
+        ],
+        "targetOffset": [
+          0,
+          0,
+          0
+        ],
+        "targetOrientation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "thetaOffset": 60,
+        "fovy": 45,
+        "near": 0.5,
+        "far": 5000
+      },
+      "followMode": "follow-pose",
+      "scene": {},
+      "transforms": {},
+      "topics": {},
+      "layers": {},
+      "publish": {
+        "type": "point",
+        "poseTopic": "/move_base_simple/goal",
+        "pointTopic": "/clicked_point",
+        "poseEstimateTopic": "/initialpose",
+        "poseEstimateXDeviation": 0.5,
+        "poseEstimateYDeviation": 0.5,
+        "poseEstimateThetaDeviation": 0.26179939
+      },
+      "synchronize": false,
+      "imageMode": {
+        "imageTopic": "/sonar/sidescan_image"
+      }
+    },
+    "TransformTree!irjx4z": {}
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "playbackConfig": {
+    "speed": 1
+  },
+  "layout": {
+    "first": "3D!2wbfn6p",
+    "second": {
+      "first": {
+        "first": "map!3us9amv",
+        "second": "Image!32n6a07",
+        "direction": "column",
+        "splitPercentage": 51.724137931034484
+      },
+      "second": "TransformTree!irjx4z",
+      "direction": "column",
+      "splitPercentage": 90.80679093889134
+    },
+    "direction": "row",
+    "splitPercentage": 74.80371004693166
+  }
+}
