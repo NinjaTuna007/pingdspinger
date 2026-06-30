@@ -226,6 +226,22 @@ def latlon_to_utm(latitude_deg: float, longitude_deg: float,
     return (float(easting), float(northing), int(zone_number), str(zone_letter))
 
 
+def utm_to_latlon(easting_m: float, northing_m: float, zone_number: int,
+                  zone_letter: Optional[str] = None,
+                  northern: Optional[bool] = None) -> Tuple[float, float]:
+    """Convert UTM easting/northing back to WGS84 lat/lon (deg).
+
+    The inverse of :func:`latlon_to_utm`, sharing the same ``utm`` library.
+    Pass either a ``zone_letter`` or an explicit ``northern`` hemisphere flag.
+
+    Returns (latitude_deg, longitude_deg).
+    """
+    import utm
+    lat, lon = utm.to_latlon(easting_m, northing_m, int(zone_number),
+                             zone_letter=zone_letter, northern=northern)
+    return (float(lat), float(lon))
+
+
 def meridian_convergence_rad(latitude_deg: float, longitude_deg: float,
                              zone: Optional[int] = None) -> float:
     """

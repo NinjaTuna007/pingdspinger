@@ -37,6 +37,8 @@ setup(
             'pointcloud_recorder = pingdsp_driver.pointcloud_recorder:main',
             'sonar_control_node = pingdsp_driver.sonar_control_node:main',
             'sidescan_viewer_node = pingdsp_driver.sidescan_viewer_node:main',
+            'clicked_point_to_navsat = '
+            'pingdsp_driver.clicked_point_to_navsat:main',
         ],
     },
 )
