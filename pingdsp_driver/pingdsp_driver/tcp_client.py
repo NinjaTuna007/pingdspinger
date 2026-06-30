@@ -88,25 +88,46 @@ class TcpClient:
         
         data = bytearray()
         remaining = size
-        
+
+        # A socket timeout in the *middle* of a frame must NOT discard the
+        # bytes received so far: dropping them desynchronises the stream and
+        # forces an expensive byte-by-byte resync (and loses the ping). We
+        # only ever return None at a clean message boundary - i.e. when no
+        # bytes have been consumed yet - or after the peer stalls completely
+        # for several consecutive timeout windows mid-frame.
+        max_stall_timeouts = 3
+        stall_timeouts = 0
+
         try:
             while remaining > 0:
-                chunk = self.socket.recv(remaining)
+                try:
+                    chunk = self.socket.recv(remaining)
+                except socket.timeout:
+                    if not data:
+                        # Clean boundary, nothing consumed yet - safe to bail.
+                        return None
+                    # Partial frame in flight: keep waiting instead of
+                    # discarding, so the stream stays aligned.
+                    stall_timeouts += 1
+                    if stall_timeouts >= max_stall_timeouts:
+                        self.logger.warning(
+                            f"Stream stalled mid-frame ({len(data)}/{size} "
+                            f"bytes received); giving up")
+                        return None
+                    continue
+
                 if not chunk:
                     # Connection closed by remote
                     self.logger.warning("Connection closed by remote")
                     self.connected = False
                     return None
-                
+
                 data.extend(chunk)
                 remaining -= len(chunk)
-            
+                stall_timeouts = 0
+
             return bytes(data)
-        
-        except socket.timeout:
-            self.logger.debug("Socket timeout during recv")
-            return None
-        
+
         except socket.error as e:
             self.logger.error(f"Socket error during recv: {e}")
             self.connected = False

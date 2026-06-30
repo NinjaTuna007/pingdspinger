@@ -670,7 +670,19 @@ class DxData:
         xyz[:n_port, 1] = horizontal[:n_port]   # Port: positive Y
         xyz[n_port:, 1] = -horizontal[n_port:]  # Starboard: negative Y
         xyz[:, 2] = depth  # Z (depth)
-        
+
+        # Reject corrupt points before they leave the parser. A desynced or
+        # truncated frame can yield garbage ranges (~1e19) that later overflow
+        # float32 arithmetic downstream. ranges/angles share xyz row order
+        # (port rows first, then starboard), so the mask applies directly.
+        # SANE_MAX_RANGE is a hard physical sanity bound, not the user-tunable
+        # operating range (that filtering happens in pointcloud_filter).
+        SANE_MAX_RANGE = 5000.0  # metres
+        valid = (np.isfinite(ranges) & np.isfinite(angles)
+                 & (ranges >= 0.0) & (ranges <= SANE_MAX_RANGE))
+        if not bool(valid.all()):
+            xyz = xyz[valid]
+
         return xyz
     
     def get_recorded_filename(self) -> str:

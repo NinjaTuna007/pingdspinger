@@ -171,12 +171,17 @@ class PointCloudFilter(Node):
         Returns:
             Filtered Nx4 array
         """
-        # Calculate range (distance from origin in XY plane for bathymetry)
-        ranges = np.sqrt(points[:, 0]**2 + points[:, 1]**2 + points[:, 2]**2)
-        
+        # Compute in float64 so a stray corrupt coordinate cannot overflow
+        # when squared (float32 squares of ~1e19 saturate to inf and emit a
+        # RuntimeWarning). Non-finite ranges are masked out explicitly.
+        xyz = points[:, :3].astype(np.float64)
+        ranges = np.sqrt(xyz[:, 0] ** 2 + xyz[:, 1] ** 2 + xyz[:, 2] ** 2)
+
         # Create mask for valid range
-        valid_mask = (ranges >= self.min_range) & (ranges <= self.max_range)
-        
+        valid_mask = (np.isfinite(ranges)
+                      & (ranges >= self.min_range)
+                      & (ranges <= self.max_range))
+
         return points[valid_mask]
     
     def apply_intensity_filter(self, points: np.ndarray) -> np.ndarray:
@@ -225,9 +230,10 @@ class PointCloudFilter(Node):
         if len(points) < 3:
             return points
         
-        # Compute distance between consecutive points
-        diffs = np.diff(points[:, :3], axis=0)
-        distances = np.sqrt(np.sum(diffs**2, axis=1))
+        # Compute distance between consecutive points (float64 to avoid
+        # overflow on any residual large coordinate).
+        diffs = np.diff(points[:, :3].astype(np.float64), axis=0)
+        distances = np.sqrt(np.sum(diffs ** 2, axis=1))
         
         # Create mask: keep first point, then check distances
         valid_mask = np.ones(len(points), dtype=bool)

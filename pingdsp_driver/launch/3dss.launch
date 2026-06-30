@@ -25,6 +25,8 @@
          description="Let the sonar driver broadcast map-&gt;odom-&gt;sonar TF. Set false when the SBG stack owns the pose tree."/>
     <arg name="publish_odometry" default="true"
          description="Let the sonar driver publish vehicle position/path. Set false when the SBG stack owns odometry."/>
+    <arg name="publish_navsatfix" default="true"
+         description="Republish the GPS embedded in the sonar NMEA stream as sensor_msgs/NavSatFix (sonar/fix). Set false when the SBG stack owns the geo fix."/>
     
     <!-- 3DSS-DX Driver Node -->
     <node pkg="pingdsp_driver" exec="tdss_driver" name="tdss_driver" output="screen">
@@ -33,6 +35,7 @@
         <param name="sonar_port" value="$(var sonar_port)"/>
         <param name="publish_tf" value="$(var publish_tf)"/>
         <param name="publish_odometry" value="$(var publish_odometry)"/>
+        <param name="publish_navsatfix" value="$(var publish_navsatfix)"/>
     </node>
     
     <!-- Point Cloud Filter Node (optional) -->

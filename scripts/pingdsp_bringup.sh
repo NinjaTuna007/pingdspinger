@@ -123,7 +123,9 @@ fi
 # frame then hangs off pingdsp/base_link via the static TF in sbg.launch.
 SONAR_TF_ARGS=""
 if [[ "$ENABLE_SBG" == "true" ]]; then
-    SONAR_TF_ARGS="publish_tf:=false publish_odometry:=false"
+    # SBG also owns the geo fix (/pingdsp/fix), so silence the sonar driver's
+    # own NavSatFix to avoid two competing fix sources.
+    SONAR_TF_ARGS="publish_tf:=false publish_odometry:=false publish_navsatfix:=false"
 fi
 
 # The SBG stack is identical in both modes: the real sbg_device binds UDP 24333

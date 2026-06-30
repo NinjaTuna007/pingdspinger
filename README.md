@@ -46,6 +46,9 @@ on your overlay.
 MODE=sim ./scripts/pingdsp_bringup.sh   # replay a network capture (pcap) instead
 ```
 
+> Full launch guide — every mode, knob and recipe — is in
+> [`scripts/README.md`](scripts/README.md).
+
 Creates a tmux session `pingdsp` with three windows:
 
 1. **sonar** – `3dss.launch` (the real driver). Real: connects to the sonar over
