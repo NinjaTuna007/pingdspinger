@@ -3,9 +3,20 @@ pointcloud_recorder:
     # Output settings
     output_dir: '/home/shekharu/colcon_ws/src/my_pkgs/pingdspinger/pointclouds'
     output_filename: ''  # Auto-generate timestamp-based filename if empty
-    
+
     # Input topic (use filtered or raw)
     input_topic: 'sonar/bathymetry_filtered'  # Or 'sonar/bathymetry' for raw
-    
-    # Frame to record points in
-    frame_id: 'odom'
+
+    # Global, UTM-aligned frame to record points in. The first frame that TF can
+    # resolve is used: 'utm' for the SBG stack, 'map' for the sonar-only stack
+    # (which is also UTM-valued). Points are written as easting/northing/z.
+    target_frame: 'utm'
+    fallback_frames: ['map']
+
+    # Noise gate on sonar-head-relative coordinates (metres from the transducer),
+    # applied BEFORE the UTM transform so it works anywhere on the globe.
+    max_horizontal: 2000.0  # reject |x|,|y| beyond this many metres from head
+    max_abs_z: 100.0        # reject |depth| beyond this many metres
+
+    # Flush cadence in pings (1 == flush every ping; safest for kill-anytime).
+    flush_every: 1

@@ -65,8 +65,9 @@ ENABLE_VIEWER="${ENABLE_VIEWER:-true}"       # run sidescan_viewer_node: low-rat
                                              #   for Foxglove + bags (2 Hz, 512x1024 by default)
 ENABLE_CLICKED="${ENABLE_CLICKED:-true}"     # run clicked_point_to_navsat: /clicked_point -> clicked_fix (NavSatFix)
 ENABLE_SBG="${ENABLE_SBG:-auto}"             # true | false | auto (auto: on, but off for sonar-only pcaps)
-ENABLE_RECORDER="${ENABLE_RECORDER:-false}"  # run pointcloud_recorder: filtered cloud -> PLY/XYZ/PCD on
-                                             #   Ctrl+C (output dir/topic/frame in config/recorder_params.yaml)
+ENABLE_RECORDER="${ENABLE_RECORDER:-true}"   # stream filtered cloud -> UTM .xyz (CloudCompare-ready) in
+                                             #   pointclouds/; written incrementally so any kill leaves a
+                                             #   complete file. Set false to skip. (config/recorder_params.yaml)
 REQUIRE_NAV_FIX="${REQUIRE_NAV_FIX:-auto}"   # true | false | auto (auto: false in sim, true in real)
 ROS_SETUP="${ROS_SETUP:-}"                   # extra setup.bash to source (optional)
 

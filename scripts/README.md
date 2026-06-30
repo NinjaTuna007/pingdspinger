@@ -78,7 +78,7 @@ MODE=sim PCAP_SPEED=4.0 ENABLE_GUI=false ./scripts/pingdsp_bringup.sh
 | `ENABLE_VIEWER` | `true` | both | Run `sidescan_viewer_node`: a small, low-rate `sonar/sidescan_image` (2 Hz, 512×1024 bgr8 ≈ 1.5 MB/frame) for Foxglove **and** bags. Knobs match the GUI's default look (`flatten 0.70`, `clahe 0.5`, copper); tune live with `ros2 param set /sidescan_viewer_node …`. |
 | `ENABLE_CLICKED` | `true` | both | Run `clicked_point_to_navsat`: turns Foxglove/RViz `/clicked_point` into a geo-referenced `clicked_fix` (`sensor_msgs/NavSatFix`), anchored off the live `pingdsp/fix` or `sonar/fix` + TF. |
 | `ENABLE_SBG` | `auto` | both | `true` / `false` / `auto`. `auto` = on, but **off** for sonar-only pcaps. |
-| `ENABLE_RECORDER` | `false` | both | Run `pointcloud_recorder`: dumps the filtered cloud to PLY/XYZ/PCD on `Ctrl+C` (paths in `config/recorder_params.yaml`). |
+| `ENABLE_RECORDER` | `true` | both | Stream the filtered cloud to a UTM-referenced `.xyz` in `pointclouds/` (easting/northing/z, float64). Written incrementally + flushed, so any kill leaves a complete file. CloudCompare prompts for a global shift on import - accept it. Set `false` to skip. (paths/bounds in `config/recorder_params.yaml`) |
 | `REQUIRE_NAV_FIX` | `auto` | both | Gate the odom datum on a full GNSS fix (`solution_mode==4`). `auto` = `false` in sim (bench captures have no fix), `true` in real. |
 | `ROS_SETUP` | _empty_ | both | Extra `setup.bash` to source in every pane (optional overlay). |
 
@@ -90,7 +90,7 @@ MODE=sim PCAP_SPEED=4.0 ENABLE_GUI=false ./scripts/pingdsp_bringup.sh
 # --- Live hardware ---------------------------------------------------------
 ./scripts/pingdsp_bringup.sh                              # default real-mode
 ENABLE_BAG=true ./scripts/pingdsp_bringup.sh              # + record everything to a bag
-ENABLE_RECORDER=true ./scripts/pingdsp_bringup.sh         # + save filtered pointcloud on exit
+ENABLE_RECORDER=false ./scripts/pingdsp_bringup.sh        # skip the UTM .xyz pointcloud (on by default)
 SONAR_HOST=192.168.228.50 ./scripts/pingdsp_bringup.sh    # force the sonar host
 
 # --- Replay (sim) ----------------------------------------------------------
