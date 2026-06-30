@@ -37,6 +37,7 @@ unit testable without ROS.
 from collections import deque
 from datetime import datetime
 import os
+from threading import Lock
 
 import numpy as np
 from rcl_interfaces.msg import SetParametersResult
@@ -62,29 +63,29 @@ class SidescanViewerNode(Node):
         # Rendered width in pixels (raw swath is downsampled to this).
         self.declare_parameter('target_width', ssi.DEFAULT_TARGET_WIDTH)
         # Image publish rate (Hz). <=0 disables live publishing.
-        self.declare_parameter('publish_rate', 5.0)
+        self.declare_parameter('publish_rate', 15.0)
         # Fixed log window: log1p(amp) in [log_min, log_max] maps to 0..255.
         # No normalisation - this transfer function is constant across pings.
         # Amplitudes are raw float32 envelope magnitudes (can exceed 1e6), so
         # log1p spans ~7-16; this window sits on the seabed band. It scales with
         # the sonar gain/range settings, so re-tune per dataset if needed.
         self.declare_parameter('log_min', 11.5)
-        self.declare_parameter('log_max', 14.5)
+        self.declare_parameter('log_max', 15.0)
         # Gamma (<1 brightens mid-tones, >1 darkens).
         self.declare_parameter('gamma', 1.0)
         # Colormap: 'copper', 'bronze' or 'gray'.
-        self.declare_parameter('colormap', ssi.DEFAULT_COLORMAP)
+        self.declare_parameter('colormap', 'bronze')
         # Blank this many pixels each side of nadir (centre = near-transducer
         # closest-range returns). 0 = keep the full swath including nadir.
         self.declare_parameter('nadir_bins', 0)
-        # --- Optional feature-enhancement steps (all off by default; with them
-        # off the image is the plain fixed-log render, no normalisation) ---
+        # --- Tunable feature-enhancement steps. Defaults mirror the GUI
+        # sidescan preset; set them to 0 for the plain fixed-log render. ---
         # Across-track gain flattening (0=off..1=full): removes the range
         # brightness gradient so targets/shadows pop instead of the nadir glow.
-        self.declare_parameter('flatten_strength', 0.0)
+        self.declare_parameter('flatten_strength', 0.70)
         # CLAHE local-contrast clip limit (0=off; ~2-4 typical): makes local
         # texture stand out without globally blowing out bright areas.
-        self.declare_parameter('clahe_clip', 0.0)
+        self.declare_parameter('clahe_clip', 0.5)
         self.declare_parameter('clahe_grid', 8)
         # Median despeckle kernel (0/1=off, odd >=3): kills speckle + streaks.
         self.declare_parameter('despeckle', 0)
@@ -114,21 +115,18 @@ class SidescanViewerNode(Node):
         self.input_topic = self.get_parameter('input_topic').value
         self.output_topic = self.get_parameter('output_topic').value
         self.frame_id = self.get_parameter('frame_id').value
-        self.save_dir = self.get_parameter('save_dir').value
+        self.save_dir = os.path.expanduser(
+            str(self.get_parameter('save_dir').value))
         self.save_on_shutdown = bool(
             self.get_parameter('save_on_shutdown').value)
 
-        # Newest row at index 0 (left of deque). maxlen drops the oldest.
-        self.rows = deque(maxlen=self.num_pings)
+        # Newest row at index 0 (left of deque). maxlen drops the oldest. Keep
+        # raw rows as well as cached log rows so width/nadir changes can reuse
+        # the accumulated waterfall instead of clearing it.
+        self.lock = Lock()
+        self.raw_rows = deque(maxlen=self.num_pings)
+        self.log_rows = deque(maxlen=self.num_pings)
         self.ping_count = 0
-
-        # Renderer: bin -> log -> fixed window -> colormap (no normalisation).
-        self.proc = ssi.WaterfallProcessor(self.target_width,
-                                           log_min=self.log_min,
-                                           log_max=self.log_max,
-                                           gamma=self.gamma,
-                                           colormap=self.colormap,
-                                           nadir_bins=self.nadir_bins)
 
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -168,18 +166,30 @@ class SidescanViewerNode(Node):
             self.timer = self.create_timer(
                 1.0 / self.publish_rate, self.publish_image)
 
+    @staticmethod
+    def _bin_raw(raw, width):
+        """Bin a raw across-track ping to ``width`` and convert to log1p."""
+        return np.log1p(
+            np.abs(ssi.resample_row(raw, width))).astype(np.float32)
+
     def _resize_buffer(self, new_num_pings):
-        """Swap in a new deque with ``new_num_pings`` maxlen, keeping newest."""
-        new_rows = deque(self.rows, maxlen=new_num_pings)
-        self.rows = new_rows
+        """Swap in new deques with ``new_num_pings`` maxlen, keeping newest."""
+        self.raw_rows = deque(self.raw_rows, maxlen=new_num_pings)
+        self.log_rows = deque(self.log_rows, maxlen=new_num_pings)
         self.num_pings = new_num_pings
+
+    def _rebuild_log_rows(self):
+        """Re-bin cached raw rows to the current target width."""
+        self.log_rows = deque(
+            (self._bin_raw(row, self.target_width) for row in self.raw_rows),
+            maxlen=self.num_pings)
 
     def _on_set_parameters(self, params):
         """Validate + apply live parameter changes (the set_parameters svc).
 
         Rows are cached at a fixed pixel width, so a ``target_width`` change
-        clears the buffer (mixed-width rows cannot be stacked); ``num_pings``
-        is resized in place keeping the most recent rows.
+        re-bins the saved raw rows in place; ``num_pings`` is resized in place
+        keeping the most recent rows.
         """
         for p in params:
             if p.name == 'num_pings':
@@ -187,18 +197,20 @@ class SidescanViewerNode(Node):
                     return SetParametersResult(
                         successful=False,
                         reason='num_pings must be >= 1')
-                self._resize_buffer(int(p.value))
+                with self.lock:
+                    self._resize_buffer(int(p.value))
                 self.get_logger().info(f'num_pings -> {self.num_pings}')
             elif p.name == 'target_width':
                 if p.value is None or int(p.value) < 1:
                     return SetParametersResult(
                         successful=False,
                         reason='target_width must be >= 1')
-                self.target_width = int(p.value)
-                self.proc.set_width(self.target_width)
-                self.rows.clear()
+                with self.lock:
+                    self.target_width = int(p.value)
+                    self._rebuild_log_rows()
                 self.get_logger().info(
-                    f'target_width -> {self.target_width} (buffer cleared)')
+                    f'target_width -> {self.target_width} '
+                    '(cached pings re-binned)')
             elif p.name == 'publish_rate':
                 if p.value is None or float(p.value) < 0.0:
                     return SetParametersResult(
@@ -210,18 +222,15 @@ class SidescanViewerNode(Node):
                     f'publish_rate -> {self.publish_rate} Hz')
             elif p.name == 'log_min':
                 self.log_min = float(p.value)
-                self.proc.log_min = self.log_min
                 self.get_logger().info(f'log_min -> {self.log_min}')
             elif p.name == 'log_max':
                 self.log_max = float(p.value)
-                self.proc.log_max = self.log_max
                 self.get_logger().info(f'log_max -> {self.log_max}')
             elif p.name == 'gamma':
                 if p.value is None or float(p.value) <= 0.0:
                     return SetParametersResult(
                         successful=False, reason='gamma must be > 0')
                 self.gamma = float(p.value)
-                self.proc.gamma = self.gamma
                 self.get_logger().info(f'gamma -> {self.gamma}')
             elif p.name == 'colormap':
                 name = str(p.value).lower()
@@ -230,14 +239,12 @@ class SidescanViewerNode(Node):
                         successful=False,
                         reason="colormap must be copper/bronze/gray")
                 self.colormap = name
-                self.proc.colormap = name
                 self.get_logger().info(f'colormap -> {name}')
             elif p.name == 'nadir_bins':
                 if p.value is None or int(p.value) < 0:
                     return SetParametersResult(
                         successful=False, reason='nadir_bins must be >= 0')
                 self.nadir_bins = int(p.value)
-                self.proc.nadir_bins = self.nadir_bins
                 self.get_logger().info(f'nadir_bins -> {self.nadir_bins}')
             elif p.name == 'flatten_strength':
                 if p.value is None or not (0.0 <= float(p.value) <= 1.0):
@@ -268,44 +275,68 @@ class SidescanViewerNode(Node):
         return SetParametersResult(successful=True)
 
     def ping_callback(self, msg: Ping3DSS):
-        """Convert a ping's raw samples to a binned log row and buffer it."""
+        """Store one ping's raw row plus its binned log row."""
         try:
             port = np.asarray(msg.port_sidescan_samples, dtype=np.float32)
             stbd = np.asarray(msg.starboard_sidescan_samples, dtype=np.float32)
-            row = self.proc.process_row(port, stbd)
-            if row is None:
+            combined = ssi.combine_ping(port, stbd)
+            if combined.size == 0:
                 return
-            self.rows.appendleft(row)
-            self.ping_count += 1
+            # Scrub non-finite samples before binning so they cannot smear into
+            # neighbouring bins via the cumulative-sum resample.
+            combined = np.nan_to_num(combined, nan=0.0, posinf=0.0,
+                                     neginf=0.0)
+            with self.lock:
+                width = self.target_width
+                self.raw_rows.appendleft(combined)
+                self.log_rows.appendleft(self._bin_raw(combined, width))
+                self.ping_count += 1
         except Exception as e:  # noqa: BLE001 - never let a bad ping kill us
             self.get_logger().error(f'Error buffering ping: {e}')
 
     def render(self):
         """Build the current waterfall image (newest on top) or None.
 
-        Pipeline (all enhancement steps optional / off by default): stack the
+        Pipeline: stack the
         buffered log rows -> [across-track flatten] -> fixed log window + gamma
         -> blank nadir -> [CLAHE] -> [despeckle] -> colormap. The image is
         always ``num_pings`` rows tall (bottom NaN/black until the buffer is
         full) so its dimensions stay constant and viewers do not re-lay-out.
         """
-        if not self.rows:
+        with self.lock:
+            rows = list(self.log_rows)
+            num_pings = self.num_pings
+            log_min = self.log_min
+            log_max = self.log_max
+            gamma = self.gamma
+            colormap = self.colormap
+            nadir_bins = self.nadir_bins
+            flatten_strength = self.flatten_strength
+            clahe_clip = self.clahe_clip
+            clahe_grid = self.clahe_grid
+            despeckle = self.despeckle
+        if not rows:
             return None
-        log_img = ssi.stack_log_rows(self.rows, self.num_pings)
+        log_img = ssi.stack_log_rows(rows, num_pings)
         if log_img is None:
             return None
-        if self.flatten_strength > 0.0:
-            log_img = ssi.flatten_across_track(log_img, self.flatten_strength)
-        gray = ssi.log_to_gray(log_img, self.proc.log_min, self.proc.log_max,
-                               self.proc.gamma)
-        gray = ssi.blank_nadir(gray, self.nadir_bins)
-        if self.clahe_clip > 0.0:
-            gray = ssi.apply_clahe(gray, self.clahe_clip, self.clahe_grid)
+        # Exclude the near-nadir band from the across-track stats and black it
+        # out, without having to clear or reprocess the buffer when it changes.
+        if nadir_bins > 0 and 2 * nadir_bins < log_img.shape[1]:
+            centre = log_img.shape[1] // 2
+            log_img[:, centre - nadir_bins:centre + nadir_bins] = np.nan
+        if flatten_strength > 0.0:
+            log_img = ssi.flatten_across_track(log_img, flatten_strength)
+        gray = ssi.log_to_gray(log_img, log_min, log_max, gamma)
+        if clahe_clip > 0.0:
+            gray = ssi.apply_clahe(gray, clahe_clip, clahe_grid)
             # CLAHE re-fills the black nadir stripe; blank it again.
-            gray = ssi.blank_nadir(gray, self.nadir_bins)
-        if self.despeckle >= 3:
-            gray = ssi.despeckle_gray(gray, self.despeckle)
-        return ssi.apply_colormap(gray, self.colormap)
+            gray = ssi.blank_nadir(gray, nadir_bins)
+        if despeckle >= 3:
+            if despeckle % 2 == 0:
+                despeckle += 1
+            gray = ssi.despeckle_gray(gray, despeckle)
+        return ssi.apply_colormap(gray, colormap)
 
     def publish_image(self):
         """Render and publish the current waterfall as a bgr8 Image."""
@@ -330,8 +361,10 @@ class SidescanViewerNode(Node):
 
     def reset_callback(self, request, response):
         """Trigger service: clear the buffer and rebuild the waterfall fresh."""
-        self.rows.clear()
-        self.ping_count = 0
+        with self.lock:
+            self.raw_rows.clear()
+            self.log_rows.clear()
+            self.ping_count = 0
         response.success = True
         response.message = 'Sidescan buffer cleared; rebuilding from scratch.'
         self.get_logger().info(response.message)

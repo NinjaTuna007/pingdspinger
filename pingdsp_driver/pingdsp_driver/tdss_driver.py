@@ -18,7 +18,7 @@ from rclpy.node import Node
 from rclpy.time import Time
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
-from sensor_msgs.msg import PointCloud2, PointField
+from sensor_msgs.msg import PointCloud2, PointField, NavSatFix, NavSatStatus
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import Path
 from std_msgs.msg import Header, String
@@ -57,6 +57,13 @@ class TdssDxDriver(Node):
         # nav data embedded in the sonar stream (NMEA/TSS1/VNYCM).
         self.declare_parameter('publish_tf', True)
         self.declare_parameter('publish_odometry', True)
+        # NavSatFix from the GPS embedded in the sonar NMEA stream. Useful when
+        # there is no SBG (e.g. replaying pcaps without SBG data) so Foxglove
+        # can still place the platform on a map. When the SBG stack is running
+        # it owns the geo fix (/pingdsp/fix), so the bringup sets this false to
+        # avoid two competing NavSatFix sources.
+        self.declare_parameter('publish_navsatfix', True)
+        self.declare_parameter('navsatfix_topic', 'sonar/fix')
         
         # Get parameters
         self.sonar_host = self.get_parameter('sonar_host').value
@@ -69,6 +76,9 @@ class TdssDxDriver(Node):
         self.publish_tf_enabled = bool(self.get_parameter('publish_tf').value)
         self.publish_odometry_enabled = bool(
             self.get_parameter('publish_odometry').value)
+        self.publish_navsatfix_enabled = bool(
+            self.get_parameter('publish_navsatfix').value)
+        self.navsatfix_topic = self.get_parameter('navsatfix_topic').value
         
         # Setup logging
         logging.basicConfig(level=logging.INFO)
@@ -117,6 +127,14 @@ class TdssDxDriver(Node):
             'sonar/nmea',
             10
         )
+
+        self.navsat_pub = None
+        if self.publish_navsatfix_enabled:
+            self.navsat_pub = self.create_publisher(
+                NavSatFix,
+                self.navsatfix_topic,
+                10
+            )
         
         self.status_pub = self.create_publisher(
             String,
@@ -158,6 +176,12 @@ class TdssDxDriver(Node):
         self.utm_initialized = False
         self.utm_zone = None
         self.utm_meridian_convergence = 0.0  # Grid convergence angle in radians
+
+        # Latest geodetic fix from the sonar NMEA stream (for NavSatFix).
+        self.latitude = None
+        self.longitude = None
+        self.altitude = 0.0
+        self.gps_fix_quality = 0
         
         # Vehicle trajectory path
         self.vehicle_path = Path()
@@ -611,10 +635,14 @@ class TdssDxDriver(Node):
         Initialises the UTM transformer and meridian convergence on the first
         valid fix, then converts lat/lon to easting/northing.
         """
-        result = nav_parsers.parse_gpgga(sentence)
+        result = nav_parsers.parse_gpgga_fix(sentence)
         if result is None:
             return
-        latitude, longitude = result
+        latitude, longitude, altitude, fix_quality = result
+        self.latitude = latitude
+        self.longitude = longitude
+        self.altitude = altitude
+        self.gps_fix_quality = fix_quality
 
         # Lock the UTM zone + grid convergence on the first GPS fix, then keep
         # projecting into that same zone so coordinates stay continuous.
@@ -631,6 +659,30 @@ class TdssDxDriver(Node):
             latitude, longitude, force_zone_number=self.utm_zone)
         self.current_x = easting
         self.current_y = northing
+
+        # Republish the embedded GPS fix as NavSatFix for map tools (Foxglove)
+        # when no SBG geo source is present.
+        self._publish_navsatfix()
+
+    def _publish_navsatfix(self):
+        """Publish the latest sonar-stream GPS fix as sensor_msgs/NavSatFix."""
+        if self.navsat_pub is None or self.latitude is None:
+            return
+        fix = NavSatFix()
+        fix.header = Header()
+        fix.header.stamp = self.get_clock().now().to_msg()
+        fix.header.frame_id = self.frame_id
+        status = NavSatStatus()
+        status.service = NavSatStatus.SERVICE_GPS
+        # GGA quality 0 == no fix; anything else is a usable solution.
+        status.status = (NavSatStatus.STATUS_FIX if self.gps_fix_quality > 0
+                         else NavSatStatus.STATUS_NO_FIX)
+        fix.status = status
+        fix.latitude = float(self.latitude)
+        fix.longitude = float(self.longitude)
+        fix.altitude = float(self.altitude)
+        fix.position_covariance_type = NavSatFix.COVARIANCE_TYPE_UNKNOWN
+        self.navsat_pub.publish(fix)
     
     def _parse_gphdt(self, sentence: str):
         """Parse $GPHDT/$GNHDT true heading and update grid yaw (ENU)."""

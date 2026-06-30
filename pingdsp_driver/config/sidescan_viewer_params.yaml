@@ -1,5 +1,9 @@
 sidescan_viewer_node:
   ros__parameters:
+    # Defaults mirror gui/sidescan/config/sidescan_default.json:
+    # width -> target_width, rate -> publish_rate,
+    # flatten -> flatten_strength, clahe -> clahe_clip.
+
     # Number of most-recent pings (rows) to render in the waterfall.
     num_pings: 2048
 
@@ -11,36 +15,36 @@ sidescan_viewer_node:
 
     # Live image publish rate in Hz (<=0 disables live publishing; the image
     # is only built when something subscribes to output_topic).
-    publish_rate: 5.0
+    publish_rate: 15.0
 
     # Fixed log display window (NO normalisation). log1p(amp) is mapped
     # linearly: log_min -> black, log_max -> white, values outside clip.
     # Amplitudes are raw float32 envelope magnitudes (can exceed 1e6), so log1p
-    # spans ~7-16 and the seabed sits ~11.8-14.2; this window is tuned onto that
-    # band. It scales with the sonar gain/range, so re-tune per dataset: raise
-    # log_min / lower log_max for punchier contrast, widen for a softer image.
+    # spans ~7-16 and the seabed sits ~11.8-14.6. It scales with sonar gain and
+    # range, so re-tune per dataset: raise log_min / lower log_max for punchier
+    # contrast, widen for a softer image.
     log_min: 11.5
-    log_max: 14.5
+    log_max: 15.0
 
     # Gamma (<1 brightens mid-tones, >1 darkens).
     gamma: 1.0
 
-    # Colormap: 'copper' (default), 'bronze' or 'gray'.
-    colormap: 'copper'
+    # Colormap: 'copper', 'bronze' or 'gray'.
+    colormap: 'bronze'
 
     # Blank this many pixels each side of nadir (image centre = closest-range
     # water-column returns). 0 = keep the full swath including the nadir band.
     nadir_bins: 0
 
-    # --- Optional feature-enhancement steps (all off by default; with them off
-    # the image is the plain fixed-log render with NO normalisation) ---
+    # --- Tunable feature-enhancement steps. These match the GUI default preset;
+    # set flatten_strength/clahe_clip/despeckle to 0 for the plain fixed-log
+    # render with NO normalisation. ---
     # Across-track gain flattening, 0=off .. 1=full. Removes the range-dependent
-    # brightness gradient (nadir glow) so targets and shadows stand out. This is
-    # the single biggest "make features pop" lever; try ~0.8.
-    flatten_strength: 0.0
-    # CLAHE local-contrast equalisation clip limit (0=off, ~2-4 typical) and the
-    # tile grid size. Boosts local texture without blowing out bright areas.
-    clahe_clip: 0.0
+    # brightness gradient (nadir glow) so targets and shadows stand out.
+    flatten_strength: 0.70
+    # CLAHE local-contrast equalisation clip limit (0=off) and tile grid size.
+    # Boosts local texture without blowing out bright areas.
+    clahe_clip: 0.5
     clahe_grid: 8
     # Median despeckle kernel (0/1=off, odd >=3). Suppresses speckle and thin
     # bad-ping streaks; 3 is plenty.

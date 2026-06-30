@@ -102,6 +102,47 @@ def parse_gpgga(sentence: str) -> Optional[Tuple[float, float]]:
     return None
 
 
+def parse_gpgga_fix(
+        sentence: str) -> Optional[Tuple[float, float, float, int]]:
+    """
+    Parse a ``$GPGGA`` / ``$GNGGA`` fix with altitude and quality.
+
+    Unlike :func:`parse_gpgga` (which returns only lat/lon for the UTM
+    projection), this also extracts the GGA fix-quality indicator (field 6)
+    and the antenna altitude above MSL (field 9), for publishing a full
+    ``sensor_msgs/NavSatFix``.
+
+    Returns:
+        ``(latitude_deg, longitude_deg, altitude_m, fix_quality)`` or None.
+        ``fix_quality`` follows the GGA convention (0 = no fix, 1 = GPS,
+        2 = DGPS, 4 = RTK fixed, 5 = RTK float). ``altitude_m`` is 0.0 when
+        the field is absent.
+    """
+    try:
+        parts = sentence.split(',')
+        if len(parts) < 6:
+            return None
+        lat = _nmea_lat(parts[2], parts[3])
+        lon = _nmea_lon(parts[4], parts[5])
+        if lat is None or lon is None:
+            return None
+        quality = 0
+        if len(parts) >= 7 and parts[6]:
+            try:
+                quality = int(parts[6])
+            except ValueError:
+                quality = 0
+        altitude = 0.0
+        if len(parts) >= 10 and parts[9]:
+            try:
+                altitude = float(parts[9])
+            except ValueError:
+                altitude = 0.0
+        return lat, lon, altitude, quality
+    except (ValueError, IndexError):
+        return None
+
+
 def parse_gphdt(sentence: str) -> Optional[float]:
     """
     Parse a ``$GPHDT`` / ``$GNHDT`` true-heading sentence.

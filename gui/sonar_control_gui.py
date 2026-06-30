@@ -1530,8 +1530,8 @@ class SonarControlGUI:
         'clahe': 0.5,
         'despeckle': 0,
         'zoom': 1.0,
-        'rate': 5.0,
-        'colormap': 'copper',
+        'rate': 15.0,
+        'colormap': 'bronze',
     }
 
     def _init_sidescan_state(self):
@@ -1548,10 +1548,10 @@ class SonarControlGUI:
         if not _HAVE_SIDESCAN:
             return
         
-        # Tunables, all live via the sliders below. Defaults mirror the old
-        # sidescan_viewer_node so behaviour is identical, just rendered here.
-        # Defaults come from gui/sidescan/config/sidescan_default.json (made from
-        # SS_DEFAULT_PRESET on first run), so they are editable on disk.
+        # Tunables, all live via the sliders below. The standalone
+        # sidescan_viewer_node YAML mirrors these defaults. Defaults come from
+        # gui/sidescan/config/sidescan_default.json (from SS_DEFAULT_PRESET
+        # on first run), so they are editable on disk.
         d = self.ss_default_preset = self._ss_load_default()
         self.ss_num_var = tk.IntVar(value=d['num_pings'])
         self.ss_width_var = tk.IntVar(value=d['width'])
