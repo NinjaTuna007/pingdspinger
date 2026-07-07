@@ -65,6 +65,8 @@ ENABLE_VIEWER="${ENABLE_VIEWER:-true}"       # run sidescan_viewer_node: low-rat
                                              #   for Foxglove + bags (2 Hz, 512x1024 by default)
 ENABLE_CLICKED="${ENABLE_CLICKED:-true}"     # run clicked_point_to_navsat: /clicked_point -> clicked_fix (NavSatFix)
 ENABLE_SBG="${ENABLE_SBG:-auto}"             # true | false | auto (auto: on, but off for sonar-only pcaps)
+DEBUG_SONAR_FIX="${DEBUG_SONAR_FIX:-false}"  # when SBG is on, ALSO publish sonar/fix (embedded NMEA GPS) so you
+                                             #   can compare it against the SBG/RTK /pingdsp/fix (debugging)
 ENABLE_RECORDER="${ENABLE_RECORDER:-true}"   # stream filtered cloud -> UTM .xyz (CloudCompare-ready) in
                                              #   pointclouds/; written incrementally so any kill leaves a
                                              #   complete file. Set false to skip. (config/recorder_params.yaml)
@@ -128,8 +130,16 @@ fi
 SONAR_TF_ARGS=""
 if [[ "$ENABLE_SBG" == "true" ]]; then
     # SBG also owns the geo fix (/pingdsp/fix), so silence the sonar driver's
-    # own NavSatFix to avoid two competing fix sources.
-    SONAR_TF_ARGS="publish_tf:=false publish_odometry:=false publish_navsatfix:=false"
+    # own NavSatFix to avoid two competing fix sources -- unless DEBUG_SONAR_FIX
+    # is set, in which case we ALSO publish sonar/fix (from the embedded NMEA
+    # GPS) so it can be compared against the SBG/RTK fix. Note: if the sonar
+    # stream is delivered with latency, sonar/fix will lag pingdsp/fix, so
+    # compare by NMEA UTC time rather than arrival time.
+    if [[ "$DEBUG_SONAR_FIX" == "true" ]]; then
+        SONAR_TF_ARGS="publish_tf:=false publish_odometry:=false publish_navsatfix:=true"
+    else
+        SONAR_TF_ARGS="publish_tf:=false publish_odometry:=false publish_navsatfix:=false"
+    fi
 fi
 
 # The SBG stack is identical in both modes: the real sbg_device binds UDP 24333

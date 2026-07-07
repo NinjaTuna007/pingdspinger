@@ -28,6 +28,8 @@ from pingdsp_msg.msg import Ping3DSS
 
 import numpy as np
 import logging
+import threading
+import time
 from typing import Optional
 
 from pingdsp_driver.tcp_client import TcpClient
@@ -64,6 +66,13 @@ class TdssDxDriver(Node):
         # avoid two competing NavSatFix sources.
         self.declare_parameter('publish_navsatfix', True)
         self.declare_parameter('navsatfix_topic', 'sonar/fix')
+        # Timestamp each ping with the sonar's own acquisition time (from the
+        # embedded, GNSS-disciplined timestamp) instead of the arrival time.
+        # This keeps sonar data correctly aligned with the real-time SBG pose
+        # tree even if the TCP stream is delivered with some latency, so
+        # georeferenced clouds do not smear on turns/return passes. Falls back
+        # to arrival time automatically if the sonar clock looks unsynced.
+        self.declare_parameter('use_sonar_time', True)
         
         # Get parameters
         self.sonar_host = self.get_parameter('sonar_host').value
@@ -79,6 +88,8 @@ class TdssDxDriver(Node):
         self.publish_navsatfix_enabled = bool(
             self.get_parameter('publish_navsatfix').value)
         self.navsatfix_topic = self.get_parameter('navsatfix_topic').value
+        self.use_sonar_time = bool(self.get_parameter('use_sonar_time').value)
+        self._sonar_time_warned = False
         
         # Setup logging
         logging.basicConfig(level=logging.INFO)
@@ -187,8 +198,15 @@ class TdssDxDriver(Node):
         self.vehicle_path = Path()
         self.vehicle_path.header.frame_id = self.odom_frame_id
         
-        # Create timer for connection attempts and data reading
-        self.timer = self.create_timer(0.1, self.timer_callback)
+        # Dedicated reader thread. The sonar streams pings faster than a ROS
+        # timer can drain them one-at-a-time; a timer-throttled read lets the
+        # TCP buffers back up and the driver ends up reading tens of seconds of
+        # stale data (sonar appears delayed vs the real-time SBG pose). A tight
+        # reader thread drains the socket at full line rate so sonar stays live.
+        self._running = True
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop, name='tdss_reader', daemon=True)
+        self._reader_thread.start()
         
         self.logger.info(f"3DSS-DX Driver initialized")
         self.logger.info(f"  Target: {self.sonar_host}:{self.sonar_port}")
@@ -233,45 +251,64 @@ class TdssDxDriver(Node):
             self.publish_status(f"Connection error: {e}")
             return False
     
-    def timer_callback(self):
-        """Main timer callback - connects and reads data."""
-        # Ensure connection
-        if not self.connected:
-            if not self.connect_to_sonar():
-                self.connection_lost_count += 1
-                if self.connection_lost_count >= self.max_connection_retries:
-                    self.logger.info("Unable to reconnect after multiple attempts. Shutting down.")
-                    self.publish_status("Connection lost, shutting down...")
-                    raise SystemExit(0)  # Clean exit
-                return  # Will retry on next timer callback
-            else:
-                # Successfully reconnected, reset counter
-                self.connection_lost_count = 0
-        
-        # Read one ping from TCP stream
-        try:
-            result = self.tcp_client.read_ping()
+    def _reader_loop(self):
+        """Continuously drain pings from the TCP stream (own thread).
+
+        Reads back-to-back with no artificial rate limit so the socket never
+        backs up. Handles (re)connection and preserves the original
+        exit-after-N-failed-reconnects behaviour.
+        """
+        while self._running and rclpy.ok():
+            # Ensure connection
+            if not self.connected:
+                if not self.connect_to_sonar():
+                    self.connection_lost_count += 1
+                    if self.connection_lost_count >= self.max_connection_retries:
+                        self.logger.info(
+                            "Unable to reconnect after multiple attempts. "
+                            "Shutting down.")
+                        self.publish_status("Connection lost, shutting down...")
+                        self._running = False
+                        if rclpy.ok():
+                            rclpy.shutdown()  # unblock spin() in main
+                        return
+                    time.sleep(0.1)  # brief backoff between connect attempts
+                    continue
+                else:
+                    # Successfully (re)connected, reset counter
+                    self.connection_lost_count = 0
+
+            # Read one ping and immediately loop for the next (full rate).
+            try:
+                result = self.tcp_client.read_ping()
+            except Exception as e:
+                self.logger.error(f"Error reading ping: {e}")
+                self.connected = False
+                continue
+
             if result is None:
-                # Connection lost or timeout
+                # None at a clean boundary just means no data this window;
+                # only treat it as a drop if the socket actually closed.
                 if not self.tcp_client.connected:
                     self.logger.warning("Connection lost, reconnecting...")
                     self.publish_status("Connection lost, reconnecting...")
                     self.connected = False
-                return
-            
-            header, data = result
-            self.process_ping(data)
-        
-        except Exception as e:
-            self.logger.error(f"Error reading ping: {e}")
-            self.connected = False
+                continue
+
+            # A processing error must NOT tear down the TCP connection (that
+            # would drop the stream and lose sync); log and keep reading.
+            try:
+                header, data = result
+                self.process_ping(data)
+            except Exception as e:
+                self.logger.error(f"Error processing ping: {e}")
     
     def process_ping(self, data: DxData):
         """Process a received ping and publish ROS messages."""
         self.ping_count += 1
         
         # Create timestamp
-        timestamp = self.create_timestamp(data.milliseconds_today)
+        timestamp = self.create_timestamp(data)
         
         # Extract position from ASCII data if available (NMEA sentences)
         self.update_position_from_data(data)
@@ -320,11 +357,39 @@ class TdssDxDriver(Node):
             self.logger.info(f"Processed {self.ping_count} pings (ping#{data.ping_number}, "
                            f"{data.port_bathy_count + data.stbd_bathy_count} bathy points)")
     
-    def create_timestamp(self, milliseconds_today: int) -> Time:
-        """Create ROS timestamp - uses current time for live playback."""
-        # Use current ROS time instead of sonar's internal timestamp
-        # This ensures TF and messages appear "live" in visualization tools
-        return self.get_clock().now()
+    def create_timestamp(self, data: DxData) -> Time:
+        """Timestamp a ping with its acquisition time when trustworthy.
+
+        The 3DSS embeds a GNSS-disciplined absolute timestamp per ping
+        (``data.time`` = seconds + nanoseconds since epoch). Using it keeps
+        sonar data aligned to the real-time SBG pose tree even if the TCP
+        stream is delivered with latency, which is what prevents the cloud from
+        smearing on turns/return passes.
+
+        Guarded: if the sonar time is missing or differs from the system clock
+        by more than a few minutes (e.g. host not NTP/GNSS synced, or a
+        different epoch), we fall back to arrival time and warn once so a bad
+        clock can never push timestamps wildly off.
+        """
+        now = self.get_clock().now()
+        if self.use_sonar_time and data.time.seconds > 0:
+            # Match the node clock's type, otherwise the subtraction below
+            # raises "Can't subtract times with different clock types".
+            acq = Time(seconds=int(data.time.seconds),
+                       nanoseconds=int(data.time.nanoseconds),
+                       clock_type=now.clock_type)
+            # Acquisition should be at or slightly before "now" (delivery
+            # latency). Accept a small clock skew ahead and up to 5 min behind.
+            delta = (now - acq).nanoseconds * 1e-9
+            if -5.0 <= delta <= 300.0:
+                return acq
+            if not self._sonar_time_warned:
+                self._sonar_time_warned = True
+                self.logger.warning(
+                    f"Sonar acquisition time is {delta:.1f}s from the system "
+                    "clock; using arrival time instead. Check that the host "
+                    "clock is NTP/GNSS synced to trust sonar timestamps.")
+        return now
     
     def publish_full_ping(self, data: DxData, timestamp: Time):
         """Publish complete Ping3DSS message with all metadata."""
@@ -837,6 +902,10 @@ class TdssDxDriver(Node):
     
     def destroy_node(self):
         """Cleanup on node shutdown."""
+        self._running = False
+        thread = getattr(self, '_reader_thread', None)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
         if self.tcp_client:
             self.tcp_client.disconnect()
         super().destroy_node()
