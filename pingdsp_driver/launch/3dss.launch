@@ -27,6 +27,8 @@
          description="Let the sonar driver publish vehicle position/path. Set false when the SBG stack owns odometry."/>
     <arg name="publish_navsatfix" default="true"
          description="Republish the GPS embedded in the sonar NMEA stream as sensor_msgs/NavSatFix (sonar/fix). Set false when the SBG stack owns the geo fix."/>
+    <arg name="use_sonar_time" default="true"
+         description="Stamp pings with the sonar's GNSS-disciplined acquisition time (keeps data aligned to the real-time SBG pose under stream latency). Falls back to arrival time if the sonar clock looks unsynced."/>
     
     <!-- 3DSS-DX Driver Node -->
     <node pkg="pingdsp_driver" exec="tdss_driver" name="tdss_driver" output="screen">
@@ -36,6 +38,7 @@
         <param name="publish_tf" value="$(var publish_tf)"/>
         <param name="publish_odometry" value="$(var publish_odometry)"/>
         <param name="publish_navsatfix" value="$(var publish_navsatfix)"/>
+        <param name="use_sonar_time" value="$(var use_sonar_time)"/>
     </node>
     
     <!-- Point Cloud Filter Node (optional) -->
