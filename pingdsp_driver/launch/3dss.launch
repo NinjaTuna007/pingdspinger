@@ -72,6 +72,11 @@
         </node>
     </group>
 
-    <!-- ROS 2 Bag Recorder (optional) -->
-    <executable cmd="ros2 bag record -a" output="screen" if="$(var record_bag)" cwd="$(find-pkg-share pingdsp_driver)/../../../bags"/>
+    <!-- ROS 2 Bag Recorder (optional). Writes into <repo>/bags (gitignored)
+         when $PINGDSP_REPO is set (the bringup exports it); otherwise falls
+         back to the install-relative bags dir. The bag dir must exist before
+         ros2 bag starts, so the command self-creates it ($0 = the dir): no
+         external mkdir needed. -->
+    <executable if="$(var record_bag)" output="screen"
+                cmd="bash -c 'mkdir -p &quot;$0&quot; &amp;&amp; cd &quot;$0&quot; &amp;&amp; exec ros2 bag record -a' $(env PINGDSP_REPO $(find-pkg-share pingdsp_driver)/../../..)/bags"/>
 </launch>

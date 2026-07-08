@@ -8,9 +8,12 @@ Layout (under pingdspinger/):
 
 Steps:
     1. Clean + combine raw surveys  -> cleaned/combined_clean.xyz
-    2. Grid at high resolution      -> geotiff/median_05cm.tif, shoal_p98_05cm.tif
+    2. Grid at high resolution      -> geotiff/depth_median_05cm.tif, depth_shoal_p98_05cm.tif
     3. Object detection             -> geotiff/object_relief_05cm.tif
                                        cleaned/object_candidates.xyz
+
+Depth GeoTIFF convention: water depth in metres, positive downward, NoData=-9999.
+For export-only (skip clean):  python3 export_bathymetry_geotiff.py
 
 Usage:
     python3 run_pointcloud_pipeline.py

@@ -84,13 +84,24 @@ def generate_launch_description():
     def launch_setup(context, *args, **kwargs):
         # Get runtime values
         paths_config = LaunchConfiguration('paths_config').perform(context)
-        fallback_network_dump = os.path.expanduser('~/network_dump')
-        fallback_bag_dir = os.path.expanduser('~/bags')
+        # Repo-relative defaults (gitignored), so a fresh clone works without
+        # editing paths.yaml. Falls back to ~/... only if the repo can't be
+        # located (e.g. a plain non-symlink install without $PINGDSP_REPO).
+        try:
+            from pingdsp_driver.repo_paths import repo_root
+            _repo = repo_root()
+        except Exception:
+            _repo = None
+        fallback_network_dump = os.path.join(_repo, 'network_dump') if _repo \
+            else os.path.expanduser('~/network_dump')
+        fallback_bag_dir = os.path.join(_repo, 'bags') if _repo \
+            else os.path.expanduser('~/bags')
         try:
             with open(paths_config, 'r') as f:
-                paths = yaml.safe_load(f)
-                network_dump_dir = paths.get('network_dump_dir', fallback_network_dump)
-                bag_dir = paths.get('bag_dir', fallback_bag_dir)
+                paths = yaml.safe_load(f) or {}
+                # Treat empty/missing values as "use the fallback".
+                network_dump_dir = paths.get('network_dump_dir') or fallback_network_dump
+                bag_dir = paths.get('bag_dir') or fallback_bag_dir
         except Exception:
             network_dump_dir = fallback_network_dump
             bag_dir = fallback_bag_dir

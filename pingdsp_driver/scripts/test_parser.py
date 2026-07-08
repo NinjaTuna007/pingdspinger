@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 """Test DxData parsing directly"""
 
+import os
 import subprocess
 import sys
-sys.path.insert(0, '/home/shekharu/colcon_ws/src/my_pkgs/pingdspinger/pingdspinger')
+
+# Repo-relative imports/paths so this runs from a fresh clone on any machine.
+# scripts/ -> pingdsp_driver/ -> <repo>
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(_REPO, 'pingdsp_driver', 'pingdsp_driver'))
 
 from dx_structures import DxHeader, DxData
 
 # Extract TCP stream
-pcap_file = "/home/shekharu/colcon_ws/src/my_pkgs/pingdspinger/network_dump/pingDSP_sample.pcap"
+pcap_file = os.environ.get(
+    'PCAP_FILE',
+    os.path.join(_REPO, 'network_dump', 'pingDSP_sample.pcap'))
 
 print("Extracting TCP stream...")
 result = subprocess.run(

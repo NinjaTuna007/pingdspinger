@@ -4,7 +4,10 @@
 /**:
   ros__parameters:
     # Output settings
-    output_dir: '/home/shekharu/colcon_ws/src/my_pkgs/pingdspinger/pointclouds'
+    # Empty => <repo>/pointclouds (gitignored). Set an absolute path here or
+    # export $PINGDSP_DATA_DIR / $PINGDSP_REPO to override. Kept empty so a
+    # fresh clone on any machine/user works without editing this file.
+    output_dir: ''
     output_filename: ''  # Auto-generate timestamp-based filename if empty
 
     # Input topic. Default is the live-filtered cloud so the saved .xyz is clean

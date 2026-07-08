@@ -6,7 +6,7 @@ import os
 import numpy as np
 
 from .paths import EPSG_UTM33N, GEOTIFF, OBJECT_CANDIDATES
-from .grid import cell_centers, write_geotiff
+from .grid import cell_centers, write_bathymetry_geotiff
 
 
 def detect_objects(
@@ -40,8 +40,12 @@ def detect_objects(
 
     if out_relief_tif:
         os.makedirs(os.path.dirname(out_relief_tif) or ".", exist_ok=True)
-        write_geotiff(out_relief_tif, relief, meta["min_e"], meta["max_n"], meta["res"],
-                      EPSG_UTM33N)
+        write_bathymetry_geotiff(
+            out_relief_tif, relief, meta["min_e"], meta["max_n"], meta["res"],
+            value_mode="relief",
+            description="Object relief (shoal_p98 minus median)",
+            epsg=EPSG_UTM33N,
+        )
         if verbose:
             print("Wrote", out_relief_tif)
 
