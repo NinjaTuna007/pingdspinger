@@ -48,6 +48,7 @@ from std_msgs.msg import Header
 from std_srvs.srv import Trigger
 
 from pingdsp_driver import sidescan_image as ssi
+from pingdsp_driver.repo_paths import data_dir
 from pingdsp_msg.msg import Ping3DSS
 
 
@@ -104,8 +105,9 @@ class SidescanViewerNode(Node):
         # Topic for the rendered image.
         self.declare_parameter('output_topic', 'sonar/sidescan_image')
         self.declare_parameter('frame_id', 'sonar')
-        # Where to drop saved PNGs.
-        self.declare_parameter('save_dir', os.path.expanduser('~/sonar_data'))
+        # Where to drop saved PNGs. Empty => <repo>/sidescan/saved (gitignored);
+        # override with this param or $PINGDSP_DATA_DIR / $PINGDSP_REPO.
+        self.declare_parameter('save_dir', '')
         # Save a final PNG automatically when the node shuts down.
         self.declare_parameter('save_on_shutdown', False)
 
@@ -125,7 +127,8 @@ class SidescanViewerNode(Node):
         self.input_topic = self.get_parameter('input_topic').value
         self.output_topic = self.get_parameter('output_topic').value
         self.frame_id = self.get_parameter('frame_id').value
-        self.save_dir = self.get_parameter('save_dir').value
+        sd = (self.get_parameter('save_dir').value or '').strip()
+        self.save_dir = os.path.expanduser(sd) if sd else data_dir('gui/sidescan/saved')
         self.save_on_shutdown = bool(
             self.get_parameter('save_on_shutdown').value)
 

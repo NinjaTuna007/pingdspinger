@@ -25,6 +25,8 @@ from datetime import datetime
 
 import numpy as np
 
+from pingdsp_driver.repo_paths import data_dir
+
 import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
@@ -45,9 +47,10 @@ class PointCloudRecorder(Node):
         """Open the output stream and subscribe to the bathymetry cloud."""
         super().__init__('pointcloud_recorder')
 
-        # Output
-        self.declare_parameter(
-            'output_dir', os.path.expanduser('~/sonar_data'))
+        # Output. Empty => repo-relative <repo>/pointclouds (gitignored), so a
+        # fresh clone writes inside the repo instead of the user's home dir.
+        # Override with this param or $PINGDSP_DATA_DIR / $PINGDSP_REPO.
+        self.declare_parameter('output_dir', '')
         self.declare_parameter('output_filename', '')  # auto-generate if empty
         self.declare_parameter('input_topic', 'sonar/bathymetry_filtered')
 
@@ -72,8 +75,8 @@ class PointCloudRecorder(Node):
         # rather than the current pose (which would smear the cloud on turns).
         self.declare_parameter('tf_buffer_sec', 90.0)
 
-        self.output_dir = os.path.expanduser(
-            self.get_parameter('output_dir').value)
+        od = (self.get_parameter('output_dir').value or '').strip()
+        self.output_dir = os.path.expanduser(od) if od else data_dir('pointclouds')
         self.output_filename = self.get_parameter('output_filename').value
         self.input_topic = self.get_parameter('input_topic').value
         self.target_frame = self.get_parameter('target_frame').value

@@ -191,6 +191,39 @@ class SonarControlNode(Node):
         self.control_socket = None
         self.connected = False
 
+    # A conservative allowlist for single-token command arguments (modes,
+    # methods, pulse names, beam lists like "1,2,3", env/priority enums, ...).
+    # Deliberately excludes whitespace and shell/protocol metacharacters so a
+    # caller cannot smuggle extra "--flags" or additional newline-separated
+    # commands into the sonar via a settings field.
+    _TOKEN_RE = re.compile(r'^[A-Za-z0-9_.,:+\-]+$')
+
+    @staticmethod
+    def _safe_token(value) -> Optional[str]:
+        """Return ``value`` if it is a safe single command token, else ``None``.
+
+        ROS 2 services are unauthenticated on the DDS graph, so every string
+        field arriving here is untrusted. Anything with whitespace, control
+        characters (CR/LF/NUL), or metacharacters is rejected outright rather
+        than sanitised, so the resulting command line stays exactly one token.
+        """
+        s = str(value)
+        return s if SonarControlNode._TOKEN_RE.match(s) else None
+
+    @staticmethod
+    def _safe_filename(value) -> Optional[str]:
+        """Return ``value`` if it is a safe filename token, else ``None``.
+
+        Filenames may legitimately contain spaces (we quote them), but must
+        never contain CR/LF/NUL (which would terminate the command line and let
+        the caller append arbitrary sonar commands) or a double quote (which
+        would break our quoting).
+        """
+        s = str(value)
+        if any(c in s for c in ('\r', '\n', '\x00', '"')):
+            return None
+        return s
+
     def _drain_socket(self) -> None:
         """Discard any unread bytes (socket + our buffer) before a new command.
 
@@ -261,6 +294,15 @@ class SonarControlNode(Node):
         Returns:
             Response string, "" on empty reply, or None on connection error.
         """
+        # Final safety net: never put embedded control characters on the wire.
+        # Each command is one newline-terminated line; a stray CR/LF/NUL from any
+        # caller would let a settings value smuggle additional sonar commands.
+        if any(c in command for c in ('\r', '\n', '\x00')):
+            self.logger.error(
+                "Refusing command with embedded control characters: "
+                f"{command!r}")
+            return None
+
         if not self.connected:
             if self.reconnect_on_disconnect:
                 self.logger.warning("Not connected, attempting reconnection...")
@@ -392,18 +434,26 @@ class SonarControlNode(Node):
         Section 3.1: APP command
         """
         command = request.command.lower()
-        
+
+        mode = None
+        if request.mode:
+            mode = self._safe_token(request.mode)
+            if mode is None:
+                response.success = False
+                response.message = f"Invalid mode value: {request.mode!r}"
+                return response
+
         if command == "init":
-            if request.mode:
-                cmd = f"app --init --mode={request.mode}"
+            if mode:
+                cmd = f"app --init --mode={mode}"
             else:
                 cmd = "app --init"
         elif command == "mode":
-            if not request.mode:
+            if not mode:
                 response.success = False
                 response.message = "Mode must be specified for mode command"
                 return response
-            cmd = f"app --init --mode={request.mode}"
+            cmd = f"app --init --mode={mode}"
         elif command == "exit":
             cmd = "app --exit"
         elif command == "status" or command == "get":
@@ -530,12 +580,16 @@ class SonarControlNode(Node):
         elif command == "set":
             # Build set command (side applied explicitly via _apply_sided_set)
             base = ["sidescan"]
-            if request.mode:
-                base.append(f"--mode={request.mode}")
-            if request.method:
-                base.append(f"--method={request.method}")
-            if request.beams:
-                base.append(f"--beams={request.beams}")
+            for label, raw in (("mode", request.mode),
+                               ("method", request.method),
+                               ("beams", request.beams)):
+                if raw:
+                    tok = self._safe_token(raw)
+                    if tok is None:
+                        response.success = False
+                        response.message = f"Invalid {label} value: {raw!r}"
+                        return response
+                    base.append(f"--{label}={tok}")
             response.success, response.message = self._apply_sided_set(
                 base, request.side)
             return response
@@ -620,12 +674,25 @@ class SonarControlNode(Node):
             
             # Binning parameters
             if request.binning_mode:
-                binning = f"--binning={request.binning_mode}:{request.binning_count}:{request.binning_width}"
+                bmode = self._safe_token(request.binning_mode)
+                if bmode is None:
+                    response.success = False
+                    response.message = (
+                        f"Invalid binning_mode value: {request.binning_mode!r}")
+                    return response
+                binning = f"--binning={bmode}:{request.binning_count}:{request.binning_width}"
                 cmd_parts.append(binning)
             
             # Bottom track parameters
             if request.bottomtrack_mode:
-                bottomtrack = (f"--bottomtrack={request.bottomtrack_mode}:"
+                btmode = self._safe_token(request.bottomtrack_mode)
+                if btmode is None:
+                    response.success = False
+                    response.message = (
+                        "Invalid bottomtrack_mode value: "
+                        f"{request.bottomtrack_mode!r}")
+                    return response
+                bottomtrack = (f"--bottomtrack={btmode}:"
                              f"{request.bottomtrack_cells}:{request.bottomtrack_width}:"
                              f"{request.bottomtrack_height}:{request.bottomtrack_heightp}:"
                              f"{request.bottomtrack_alpha}")
@@ -662,7 +729,12 @@ class SonarControlNode(Node):
             # Build set command (side applied explicitly via _apply_sided_set)
             base = ["transmit"]
             if request.pulse:
-                base.append(f"--pulse={request.pulse}")
+                pulse = self._safe_token(request.pulse)
+                if pulse is None:
+                    response.success = False
+                    response.message = f"Invalid pulse value: {request.pulse!r}"
+                    return response
+                base.append(f"--pulse={pulse}")
             if request.power > 0:
                 base.append(f"--power={request.power}")
             if request.beamwidth > 0:
@@ -700,14 +772,18 @@ class SonarControlNode(Node):
                 cmd_parts.append(f"--range={request.range}")
             if request.dutycycle > 0:
                 cmd_parts.append(f"--dutycycle={request.dutycycle}")
-            if request.trigger:
-                cmd_parts.append(f"--trigger={request.trigger}")
             if request.maxdepth != 0.0:
                 cmd_parts.append(f"--maxdepth={request.maxdepth}")
-            if request.env:
-                cmd_parts.append(f"--env={request.env}")
-            if request.priority:
-                cmd_parts.append(f"--priority={request.priority}")
+            for label, raw in (("trigger", request.trigger),
+                               ("env", request.env),
+                               ("priority", request.priority)):
+                if raw:
+                    tok = self._safe_token(raw)
+                    if tok is None:
+                        response.success = False
+                        response.message = f"Invalid {label} value: {raw!r}"
+                        return response
+                    cmd_parts.append(f"--{label}={tok}")
             
             cmd = " ".join(cmd_parts)
         else:
@@ -783,8 +859,13 @@ class SonarControlNode(Node):
                 response.success = False
                 response.message = "Filename must be specified for open command"
                 return response
+            filename = self._safe_filename(request.filename)
+            if filename is None:
+                response.success = False
+                response.message = (
+                    f"Invalid filename value: {request.filename!r}")
+                return response
             # Quote filename if it contains spaces
-            filename = request.filename
             if ' ' in filename:
                 filename = f'"{filename}"'
             cmd = f"file --open --filename={filename}"
@@ -843,8 +924,13 @@ class SonarControlNode(Node):
                 response.success = False
                 response.message = "Filename must be specified for start command"
                 return response
+            filename = self._safe_filename(request.filename)
+            if filename is None:
+                response.success = False
+                response.message = (
+                    f"Invalid filename value: {request.filename!r}")
+                return response
             # Quote filename if it contains spaces
-            filename = request.filename
             if ' ' in filename:
                 filename = f'"{filename}"'
             

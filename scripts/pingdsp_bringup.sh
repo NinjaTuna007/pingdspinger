@@ -118,7 +118,9 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
 fi
 
 # Command prefix sourced into every pane so each shell has the overlay.
-SOURCE_CMD="source /opt/ros/\${ROS_DISTRO:-jazzy}/setup.bash"
+# Export PINGDSP_REPO so the nodes resolve data output dirs (pointclouds, saved
+# images, bags) to repo-relative gitignored folders regardless of install type.
+SOURCE_CMD="export PINGDSP_REPO='$PKG_DIR' && source /opt/ros/\${ROS_DISTRO:-jazzy}/setup.bash"
 if [[ -f "$WS_DIR/install/setup.bash" ]]; then
     SOURCE_CMD="$SOURCE_CMD && source '$WS_DIR/install/setup.bash'"
 fi
