@@ -8,6 +8,7 @@ from std_msgs.msg import Float32, Int32
 from nav_msgs.msg import Odometry
 from pingdsp_msg.srv import (
     AppControl,
+    GainSettings,
     SidescanSettings,
     Sidescan3DSettings,
     BathymetrySettings,
@@ -21,6 +22,7 @@ from pingdsp_msg.srv import (
     SoundVelocity
 )
 import threading
+import time
 from collections import deque
 from datetime import datetime
 
@@ -71,6 +73,12 @@ class SonarControlGUI:
         self._last_sonar_stamp = None   # sonar acquisition time (float s)
         self._last_sbg_stamp = None     # SBG /odom message time (float s)
         self._rx_backlog = None         # bytes queued (kernel + driver buffer)
+        # Live sound velocity carried in the sonar data stream (DxParameters).
+        # This is the value the sonar is ACTUALLY using (probe-measured face SV
+        # when Source=Probe) and matches the vendor Control software, unlike the
+        # `sv` command which only echoes the manually configured setting.
+        self._live_sv_bulk = None       # m/s, from Ping3DSS.sound_velocity_bulk
+        self._live_sv_face = None       # m/s, from Ping3DSS.sound_velocity_face
         self._start_timing_diag()
         
         # Main split: tabs on top, console log below, joined by a draggable
@@ -91,6 +99,7 @@ class SonarControlGUI:
         self.create_sonar_tab()
         self.create_acquisition_tab()
         self.create_transmit_tab()
+        self.create_gain_tab()
         self.create_processing_tab()
         self.create_sidescan3d_tab()
         self.create_bathymetry_tab()
@@ -380,6 +389,73 @@ class SonarControlGUI:
         ttk.Button(btn_frame, text="Set Settings", command=lambda: self.transmit_settings("set")).pack(side="left", padx=5)
         ttk.Button(btn_frame, text="Commit", command=self.commit_settings, style="Accent.TButton").pack(side="left", padx=5)
     
+    def create_gain_tab(self):
+        """Create gain settings tab (Section 3.3)"""
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Gain")
+
+        settings_frame = ttk.LabelFrame(tab, text="Gain Settings (gain command)", padding=10)
+        settings_frame.pack(fill="x", padx=10, pady=5)
+
+        # Side selection
+        ttk.Label(settings_frame, text="Side:").grid(row=0, column=0, sticky="w", pady=5)
+        self.gain_side_var = tk.StringVar(value="both")
+        ttk.Combobox(settings_frame, textvariable=self.gain_side_var,
+                     values=["both", "port", "starboard"], state="readonly",
+                     width=12).grid(row=0, column=1, pady=5, padx=5)
+
+        # Each gain term: a "set" checkbox + a value spinbox, so a valid 0
+        # (const gain spans -60..60) is unambiguous.
+        ttk.Label(settings_frame, text="Constant (dB):").grid(row=1, column=0, sticky="w", pady=5)
+        self.gain_const_var = tk.DoubleVar(value=0.0)
+        ttk.Spinbox(settings_frame, textvariable=self.gain_const_var, from_=-60.0,
+                    to=60.0, increment=1.0, width=12).grid(row=1, column=1, pady=5, padx=5)
+        self.gain_const_check = tk.BooleanVar(value=True)
+        ttk.Checkbutton(settings_frame, text="Set const",
+                        variable=self.gain_const_check).grid(row=1, column=2, pady=5, padx=5)
+
+        ttk.Label(settings_frame, text="Linear (dB/m):").grid(row=2, column=0, sticky="w", pady=5)
+        self.gain_linear_var = tk.DoubleVar(value=0.2)
+        ttk.Spinbox(settings_frame, textvariable=self.gain_linear_var, from_=0.0,
+                    to=3.5, increment=0.1, width=12).grid(row=2, column=1, pady=5, padx=5)
+        self.gain_linear_check = tk.BooleanVar(value=True)
+        ttk.Checkbutton(settings_frame, text="Set linear",
+                        variable=self.gain_linear_check).grid(row=2, column=2, pady=5, padx=5)
+
+        ttk.Label(settings_frame, text="Log (dB/log m):").grid(row=3, column=0, sticky="w", pady=5)
+        self.gain_log_var = tk.DoubleVar(value=30.0)
+        ttk.Spinbox(settings_frame, textvariable=self.gain_log_var, from_=0.0,
+                    to=60.0, increment=1.0, width=12).grid(row=3, column=1, pady=5, padx=5)
+        self.gain_log_check = tk.BooleanVar(value=True)
+        ttk.Checkbutton(settings_frame, text="Set log",
+                        variable=self.gain_log_check).grid(row=3, column=2, pady=5, padx=5)
+
+        # Buttons
+        btn_frame = ttk.Frame(settings_frame)
+        btn_frame.grid(row=4, column=0, columnspan=3, pady=10)
+        ttk.Button(btn_frame, text="Get Settings",
+                   command=lambda: self.gain_settings("get")).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Set Settings",
+                   command=lambda: self.gain_settings("set")).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Commit", command=self.commit_settings,
+                   style="Accent.TButton").pack(side="left", padx=5)
+
+        # Current values readout (from a "get")
+        self.gain_current_var = tk.StringVar(value="—")
+        cur = ttk.LabelFrame(tab, text="Current", padding=10)
+        cur.pack(fill="x", padx=10, pady=5)
+        ttk.Label(cur, textvariable=self.gain_current_var, justify="left").pack(anchor="w")
+
+        info = ttk.LabelFrame(tab, text="Information", padding=10)
+        info.pack(fill="x", padx=10, pady=5)
+        ttk.Label(info, text="Command: gain [--const | --linear | --log | --port | --stbd]\n"
+                             "• Constant: -60 to 60 dB\n"
+                             "• Linear: 0.0 to 3.5 dB/m\n"
+                             "• Log: 0 to 60 dB/log(m)\n"
+                             "• Applies to both sides unless a side is selected\n"
+                             "• Requires commit command after changes",
+                 justify="left").pack(anchor="w")
+    
     def create_processing_tab(self):
         """Create processing settings tab (sidescan, sidescan3d, bathymetry)"""
         tab = ttk.Frame(self.notebook)
@@ -531,50 +607,6 @@ class SonarControlGUI:
         scrollbar.pack(side="right", fill="y")
     
     def create_bathymetry_tab(self):
-        """Create sound velocity tab (Section 3.2)"""
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Sound Velocity")
-        
-        sv_frame = ttk.LabelFrame(tab, text="Sound Velocity Control (sv command)", padding=10)
-        sv_frame.pack(fill="x", padx=10, pady=5)
-        
-        # Bulk velocity input
-        ttk.Label(sv_frame, text="Bulk Velocity (m/s):").grid(row=0, column=0, sticky="w", pady=5)
-        self.sv_bulk_var = tk.DoubleVar(value=1500.0)
-        ttk.Spinbox(sv_frame, textvariable=self.sv_bulk_var, from_=1300.0, to=2500.0, 
-                   increment=1.0, width=15).grid(row=0, column=1, pady=5, padx=5, sticky="w")
-        self.sv_bulk_check = tk.BooleanVar(value=True)
-        ttk.Checkbutton(sv_frame, text="Set bulk", variable=self.sv_bulk_check).grid(row=0, column=2, pady=5, padx=5)
-        
-        # Face velocity input
-        ttk.Label(sv_frame, text="Face Velocity (m/s):").grid(row=1, column=0, sticky="w", pady=5)
-        self.sv_face_var = tk.DoubleVar(value=1500.0)
-        ttk.Spinbox(sv_frame, textvariable=self.sv_face_var, from_=1300.0, to=2500.0, 
-                   increment=1.0, width=15).grid(row=1, column=1, pady=5, padx=5, sticky="w")
-        self.sv_face_check = tk.BooleanVar(value=False)
-        ttk.Checkbutton(sv_frame, text="Set face", variable=self.sv_face_check).grid(row=1, column=2, pady=5, padx=5)
-        
-        # Buttons
-        btn_frame = ttk.Frame(sv_frame)
-        btn_frame.grid(row=2, column=0, columnspan=3, pady=10)
-        ttk.Button(btn_frame, text="Get Current", command=lambda: self.sound_velocity_control("get")).pack(side="left", padx=5)
-        ttk.Button(btn_frame, text="Set Velocity", command=lambda: self.sound_velocity_control("set")).pack(side="left", padx=5)
-        
-        # Info label
-        info_frame = ttk.LabelFrame(tab, text="Information", padding=10)
-        info_frame.pack(fill="x", padx=10, pady=5)
-        ttk.Label(info_frame, text="Command: sv [--bulk=<value> | --face=<value>]\n"
-                                  "• Bulk: body sound velocity\n"
-                                  "• Face: transducer face sound velocity\n"
-                                  "• Range: 1300-2500 m/s\n"
-                                  "• Requires commit command after changes\n\n"
-                                  "Typical values:\n"
-                                  "• Fresh water: ~1480 m/s\n"
-                                  "• Sea water (cold): ~1450 m/s\n"
-                                  "• Sea water (warm): ~1540 m/s",
-                 justify="left").pack(anchor="w")
-    
-    def create_bathymetry_tab(self):
         """Create bathymetry settings tab (Section 3.6)"""
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Bathymetry")
@@ -710,7 +742,25 @@ class SonarControlGUI:
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Sound Velocity")
         
-        sv_frame = ttk.LabelFrame(tab, text="Sound Velocity Control (sv command)", padding=10)
+        # Live readout from the sonar data stream (DxParameters.sound_velocity).
+        # This is what the sonar is ACTUALLY using and matches the vendor
+        # Control software - unlike the `sv` command, which only echoes the
+        # manually configured setting (ignored while face Source=Probe).
+        live_frame = ttk.LabelFrame(
+            tab, text="Live (active, from sonar data stream)", padding=10)
+        live_frame.pack(fill="x", padx=10, pady=5)
+        self.sv_live_var = tk.StringVar(value="Waiting for pings...")
+        ttk.Label(live_frame, textvariable=self.sv_live_var,
+                  font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        ttk.Label(live_frame,
+                  text="This matches the 3DSS Control software. When face "
+                       "Source=Probe, the probe value is used and the "
+                       "configured 'sv' setting below is ignored.",
+                  justify="left", foreground="#555").pack(anchor="w")
+        self._update_live_sv()
+
+        sv_frame = ttk.LabelFrame(
+            tab, text="Configured setting (sv command)", padding=10)
         sv_frame.pack(fill="x", padx=10, pady=5)
         
         # Bulk velocity input
@@ -870,7 +920,7 @@ class SonarControlGUI:
                 return
         
         future = client.call_async(req)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
+        self._await_future(future, timeout_sec=5.0)
         
         if future.result() and future.result().success:
             msg = f"Sound velocity {command} successful"
@@ -891,6 +941,19 @@ class SonarControlGUI:
             self.status_var.set(f"Failed: {msg}")
             self.log(f"✗ FAILED: {msg}")
 
+    def _await_future(self, future, timeout_sec=5.0):
+        """Block until a service future completes, WITHOUT spinning.
+
+        The node is spun in a dedicated background thread (see main()), so the
+        future is driven to completion there. Calling spin_until_future_complete
+        here would raise 'Executor is already spinning'. Returns True if the
+        future completed before the timeout, else False.
+        """
+        deadline = time.monotonic() + timeout_sec
+        while not future.done() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return future.done()
+
     def app_control(self, command):
         """Call app control service"""
         self.status_var.set(f"App: {command}...")
@@ -908,7 +971,7 @@ class SonarControlGUI:
             req.mode = self.app_mode_var.get()
         
         future = client.call_async(req)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
+        self._await_future(future, timeout_sec=5.0)
         
         if future.result() and future.result().success:
             msg = f"App {command} successful"
@@ -937,7 +1000,7 @@ class SonarControlGUI:
         req.command = command
         
         future = client.call_async(req)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
+        self._await_future(future, timeout_sec=5.0)
         
         if future.result() and future.result().success:
             msg = f"{command.capitalize()} successful"
@@ -973,7 +1036,7 @@ class SonarControlGUI:
             req.priority = self.acq_priority_var.get()
         
         future = client.call_async(req)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
+        self._await_future(future, timeout_sec=5.0)
         
         if future.result() and future.result().success:
             self.status_var.set("Acquisition settings updated")
@@ -1017,6 +1080,57 @@ class SonarControlGUI:
         
         self.log("  GUI values updated from current settings")
     
+    def gain_settings(self, command):
+        """Call gain settings service (Section 3.3)."""
+        self.status_var.set(f"Gain: {command}...")
+        self.log(f"Calling sonar/gain with command={command}")
+        self.window.update()
+
+        client = self.node.create_client(GainSettings, 'sonar/gain')
+        if not client.wait_for_service(timeout_sec=1.0):
+            self.log("ERROR: gain service unavailable")
+            return
+
+        req = GainSettings.Request()
+        req.command = command
+        req.side = self.gain_side_var.get()
+        if command == "set":
+            req.set_const = bool(self.gain_const_check.get())
+            req.set_linear = bool(self.gain_linear_check.get())
+            req.set_log = bool(self.gain_log_check.get())
+            req.const_gain = float(self.gain_const_var.get())
+            req.linear_gain = float(self.gain_linear_var.get())
+            req.log_gain = float(self.gain_log_var.get())
+
+        future = client.call_async(req)
+        self._await_future(future, timeout_sec=5.0)
+
+        res = future.result()
+        if res and res.success:
+            self.status_var.set(f"Gain settings {command} successful")
+            self.log(f"✓ SUCCESS: Gain settings {command}")
+            self.log(f"  Response: {res.message}")
+            if command == "get":
+                self.gain_current_var.set(
+                    f"port: const={res.port_const:g}  linear={res.port_linear:g}  "
+                    f"log={res.port_log:g}\n"
+                    f"stbd: const={res.stbd_const:g}  linear={res.stbd_linear:g}  "
+                    f"log={res.stbd_log:g}")
+                # Populate the editable fields from the selected side.
+                side = req.side.lower()
+                if side in ("starboard", "stbd"):
+                    self.gain_const_var.set(res.stbd_const)
+                    self.gain_linear_var.set(res.stbd_linear)
+                    self.gain_log_var.set(res.stbd_log)
+                else:
+                    self.gain_const_var.set(res.port_const)
+                    self.gain_linear_var.set(res.port_linear)
+                    self.gain_log_var.set(res.port_log)
+        else:
+            msg = res.message if res else "No response"
+            self.status_var.set(f"Failed: {msg}")
+            self.log(f"✗ FAILED: {msg}")
+
     def transmit_settings(self, command):
         """Call transmit settings service"""
         self.status_var.set(f"Transmit: {command}...")
@@ -1038,7 +1152,7 @@ class SonarControlGUI:
             req.angle = int(self.tx_angle_var.get())
         
         future = client.call_async(req)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
+        self._await_future(future, timeout_sec=5.0)
         
         if future.result() and future.result().success:
             self.status_var.set("Transmit settings updated")
@@ -1115,7 +1229,7 @@ class SonarControlGUI:
             req.beams = self.ss_beams_var.get()
         
         future = client.call_async(req)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
+        self._await_future(future, timeout_sec=5.0)
         
         if future.result() and future.result().success:
             self.status_var.set("Sidescan settings updated")
@@ -1194,7 +1308,7 @@ class SonarControlGUI:
             req.amp = float(self.ss3d_amp_var.get())
         
         future = client.call_async(req)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
+        self._await_future(future, timeout_sec=5.0)
         
         if future.result() and future.result().success:
             self.status_var.set("Sidescan3D settings updated")
@@ -1294,7 +1408,7 @@ class SonarControlGUI:
                 req.bottomtrack_mode = ""
         
         future = client.call_async(req)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
+        self._await_future(future, timeout_sec=5.0)
         
         if future.result() and future.result().success:
             self.status_var.set("Bathymetry settings updated")
@@ -1361,7 +1475,7 @@ class SonarControlGUI:
         
         req = CommitSettings.Request()
         future = client.call_async(req)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
+        self._await_future(future, timeout_sec=5.0)
         
         if future.result() and future.result().success:
             self.status_var.set("Settings committed successfully")
@@ -1394,7 +1508,7 @@ class SonarControlGUI:
             req.speed = float(self.file_speed_var.get())
         
         future = client.call_async(req)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
+        self._await_future(future, timeout_sec=5.0)
         
         if future.result() and future.result().success:
             msg = f"File {command} successful"
@@ -1432,7 +1546,7 @@ class SonarControlGUI:
             req.mode = self.record_mode_var.get()
         
         future = client.call_async(req)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
+        self._await_future(future, timeout_sec=5.0)
         
         if future.result() and future.result().success:
             msg = f"Record {command} successful"
@@ -1469,7 +1583,7 @@ class SonarControlGUI:
                 req.baudrate = int(self.mru_baud_var.get())
         
         future = client.call_async(req)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
+        self._await_future(future, timeout_sec=5.0)
         
         if future.result() and future.result().success:
             msg = f"Baud {device} successful"
@@ -1737,6 +1851,9 @@ class SonarControlGUI:
             st = msg.header.stamp
             with self._timing_lock:
                 self._last_sonar_stamp = st.sec + st.nanosec * 1e-9
+                # Active SV the sonar is using (probe value when Source=Probe).
+                self._live_sv_bulk = float(msg.sound_velocity_bulk)
+                self._live_sv_face = float(msg.sound_velocity_face)
             port = np.asarray(msg.port_sidescan_samples, dtype=np.float32)
             stbd = np.asarray(msg.starboard_sidescan_samples, dtype=np.float32)
             combined = ssi.combine_ping(port, stbd)
@@ -2123,6 +2240,23 @@ class SonarControlGUI:
         except Exception:  # noqa: BLE001 - cosmetic only
             pass
         self.window.after(500, self._update_timing)
+
+    def _update_live_sv(self):
+        """Refresh the live sound-velocity readout (Tk thread), every 0.5 s.
+
+        Sourced from the sonar data stream (DxParameters.sound_velocity), which
+        reflects the value the sonar is actually using - the probe-measured face
+        SV when Source=Probe - matching the vendor Control software.
+        """
+        with self._timing_lock:
+            bulk = self._live_sv_bulk
+            face = self._live_sv_face
+        if face is None:
+            self.sv_live_var.set("Waiting for pings...")
+        else:
+            self.sv_live_var.set(
+                f"bulk = {bulk:.1f} m/s     face = {face:.1f} m/s")
+        self.window.after(500, self._update_live_sv)
 
     def run(self):
         self.window.mainloop()

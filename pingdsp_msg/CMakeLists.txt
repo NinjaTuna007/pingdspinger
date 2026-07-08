@@ -16,6 +16,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Ping3DSS.msg"
   "msg/SystemInfo.msg"
   "srv/AppControl.srv"
+  "srv/GainSettings.srv"
   "srv/SidescanSettings.srv"
   "srv/Sidescan3DSettings.srv"
   "srv/BathymetrySettings.srv"

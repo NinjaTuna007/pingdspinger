@@ -1,0 +1,23 @@
+# Service for getting/setting gain settings
+# Based on 3DSS-DX Control Command Interface Guide Section 3.3
+
+string command        # "get" or "set"
+string side           # "port", "starboard"/"stbd", or "both"
+# Which fields to apply on a "set". Explicit flags avoid 0 being ambiguous,
+# since const gain legitimately spans -60..60 (0 is a real value).
+bool set_const
+bool set_linear
+bool set_log
+float64 const_gain    # constant gain in dB, limit -60 to 60
+float64 linear_gain   # linear gain in dB/m, limit 0.0 to 3.5
+float64 log_gain      # log gain in dB/log(m), limit 0 to 60
+---
+bool success
+string message
+# Current values parsed from a "get" (per side)
+float64 port_const
+float64 port_linear
+float64 port_log
+float64 stbd_const
+float64 stbd_linear
+float64 stbd_log

@@ -12,11 +12,13 @@ import rclpy
 from rclpy.node import Node
 import socket
 import re
+import time
 import logging
 from typing import Optional
 
 from pingdsp_msg.srv import (
     AppControl,
+    GainSettings,
     SidescanSettings,
     Sidescan3DSettings,
     BathymetrySettings,
@@ -52,15 +54,24 @@ class SonarControlNode(Node):
         # Setup logging
         self.logger = self.get_logger()
         
-        # Control socket
+        # Control socket + persistent RX buffer. The control interface is a
+        # line-oriented request/response protocol, so we keep any bytes read
+        # past one response line here for the next read (normally empty).
         self.control_socket: Optional[socket.socket] = None
         self.connected = False
+        self._rx_buffer = b""
         
         # Create services based on 3DSS-DX Control Command Interface Guide
         self.srv_app_control = self.create_service(
             AppControl,
             'sonar/app_control',
             self.app_control_callback
+        )
+        
+        self.srv_gain = self.create_service(
+            GainSettings,
+            'sonar/gain',
+            self.gain_callback
         )
         
         self.srv_sidescan = self.create_service(
@@ -136,6 +147,7 @@ class SonarControlNode(Node):
         self.logger.info(f"  Control endpoint: {self.sonar_host}:{self.control_port}")
         self.logger.info(f"Services available:")
         self.logger.info(f"  - /sonar/app_control")
+        self.logger.info(f"  - /sonar/gain")
         self.logger.info(f"  - /sonar/sidescan")
         self.logger.info(f"  - /sonar/sidescan3d")
         self.logger.info(f"  - /sonar/bathymetry")
@@ -179,15 +191,75 @@ class SonarControlNode(Node):
         self.control_socket = None
         self.connected = False
 
+    def _drain_socket(self) -> None:
+        """Discard any unread bytes (socket + our buffer) before a new command.
+
+        The interface is strictly request/response, so anything still pending
+        is a stale/late reply from a previous command. Dropping it keeps every
+        command locked in step with its own response (belt-and-suspenders on
+        top of newline framing).
+        """
+        self._rx_buffer = b""
+        if self.control_socket is None:
+            return
+        self.control_socket.setblocking(False)
+        try:
+            while True:
+                chunk = self.control_socket.recv(4096)
+                if not chunk:
+                    break
+        except (BlockingIOError, InterruptedError):
+            pass
+        except OSError:
+            pass
+        finally:
+            try:
+                self.control_socket.setblocking(True)
+                self.control_socket.settimeout(self.timeout)
+            except OSError:
+                pass
+
+    def _recv_line(self) -> bytes:
+        """Read until a newline and return exactly one response line.
+
+        Accumulates across multiple recv() calls so a response split over
+        several TCP segments (e.g. a BOM on its own segment) is returned whole.
+        Any bytes past the newline are retained for the next call. Returns b''
+        if the peer closes with nothing buffered. Raises socket.timeout on
+        inactivity.
+        """
+        deadline = time.monotonic() + self.timeout
+        while b"\n" not in self._rx_buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout()
+            self.control_socket.settimeout(remaining)
+            chunk = self.control_socket.recv(4096)
+            if not chunk:
+                # Peer closed the connection.
+                self.connected = False
+                line, self._rx_buffer = self._rx_buffer, b""
+                return line.rstrip(b"\r\n")
+            self._rx_buffer += chunk
+        line, _, rest = self._rx_buffer.partition(b"\n")
+        self._rx_buffer = rest
+        return line.rstrip(b"\r")
+
     def send_command(self, command: str) -> Optional[str]:
         """
-        Send ASCII command to sonar and receive response.
-        
+        Send an ASCII command and return the single-line response.
+
+        The 3DSS-DX control interface is strictly request/response: each
+        command yields one newline-terminated line, optionally prefixed with a
+        UTF-8 BOM. We drain any stale bytes, send, then read a full line (not a
+        single recv) so a BOM/response split across TCP segments can't desync
+        subsequent 'get' queries.
+
         Args:
-            command: ASCII command string (e.g., "SET RANGE 50")
-        
+            command: ASCII command string (e.g., "sv --bulk=1480")
+
         Returns:
-            Response string or None if error
+            Response string, "" on empty reply, or None on connection error.
         """
         if not self.connected:
             if self.reconnect_on_disconnect:
@@ -196,53 +268,43 @@ class SonarControlNode(Node):
                     return None
             else:
                 return None
-        
+
         try:
-            # Send command (add newline/carriage return as per protocol)
+            self._drain_socket()
             cmd_bytes = (command + "\r\n").encode('utf-8')
             self.control_socket.sendall(cmd_bytes)
             self.logger.debug(f"Sent: {command}")
-            
-            # Receive response
-            response_bytes = self.control_socket.recv(4096)
-            
-            if not response_bytes:
+
+            line = self._recv_line()
+            if not line:
+                if not self.connected:
+                    self.logger.warning("Connection closed by peer")
+                    self.disconnect()
+                    return None
                 self.logger.warning("Received empty response")
                 return ""
-            
-            # Log raw bytes for debugging
-            self.logger.debug(f"Raw bytes: {response_bytes.hex()}")
-            
-            # Decode as UTF-8 (sonar sends UTF-8 BOM 0xEFBBBF)
+
             try:
-                response = response_bytes.decode('utf-8').strip()
-                
-                # Strip UTF-8 BOM if present
-                if response.startswith('\ufeff'):
-                    response = response[1:]
-                    self.logger.debug("Stripped UTF-8 BOM from response")
-                
+                response = line.decode('utf-8')
             except UnicodeDecodeError as e:
-                # Fall back to latin-1 which never fails
-                response = response_bytes.decode('latin-1', errors='replace').strip()
-                self.logger.warning(f"UTF-8 decode failed: {e}")
-                self.logger.warning(f"Received bytes: {response_bytes.hex()}")
-                self.logger.warning(f"Decoded as latin-1: {repr(response)}")
-            
+                response = line.decode('latin-1', errors='replace')
+                self.logger.warning(f"UTF-8 decode failed: {e}; bytes={line.hex()}")
+
+            # Strip a leading UTF-8 BOM (0xEFBBBF) and surrounding whitespace.
+            response = response.lstrip('\ufeff').strip()
             self.logger.debug(f"Received: {repr(response)}")
-            
             return response
-        
+
         except socket.timeout:
             self.logger.error("Command timeout")
             self.connected = False
             return None
-        
+
         except socket.error as e:
             self.logger.error(f"Socket error: {e}")
             self.connected = False
             return None
-        
+
         except Exception as e:
             self.logger.error(f"Unexpected error: {e}")
             return None
@@ -260,21 +322,65 @@ class SonarControlNode(Node):
         """
         if response is None:
             return False, "No response from sonar (connection issue)"
-        
-        # Check for common error indicators
-        if "ERROR" in response.upper() or "FAIL" in response.upper():
-            return False, response
-        
-        # Check for common success indicators
-        if "OK" in response.upper() or "SUCCESS" in response.upper():
-            return True, response
-        
-        # If expected pattern provided, check it
-        if expected_pattern and re.search(expected_pattern, response, re.IGNORECASE):
-            return True, response
-        
-        # Default: assume success if we got a response
-        return True, response
+
+        text = response.strip()
+        low = text.lower()
+
+        # Per the Control Command Interface Guide §2, every reply starts with
+        # 'okay' or 'error' (optionally followed by parenthesised detail).
+        # Anchor on the prefix so a value/filename that merely contains 'ok' or
+        # 'error' can't flip the result.
+        if low.startswith("okay"):
+            return True, text
+        if low.startswith("error"):
+            return False, text
+
+        if not text:
+            return False, "Empty response from sonar"
+
+        # Fallbacks for any non-conforming reply.
+        if "error" in low or "fail" in low:
+            return False, text
+        if expected_pattern and re.search(expected_pattern, text, re.IGNORECASE):
+            return True, text
+
+        # Unknown but non-empty: treat as success but surface the raw text.
+        return True, text
+
+    def _apply_sided_set(self, base_parts, side) -> tuple[bool, str]:
+        """Issue a per-side 'set' explicitly for each targeted side.
+
+        The documented no-flag 'both' behaviour is unreliable on the head - a
+        'both' set can report okay yet only take on one transducer - so we
+        always send an explicit --port and/or --stbd command and require every
+        targeted side to respond okay.
+
+        Args:
+            base_parts: command tokens without any side flag,
+                        e.g. ["transmit", "--pulse=nb10"].
+            side: "port", "starboard"/"stbd", or anything else for both.
+
+        Returns:
+            (success, message) aggregated across the targeted sides.
+        """
+        s = (side or "").lower()
+        if s == "port":
+            flags = ["--port"]
+        elif s in ("starboard", "stbd"):
+            flags = ["--stbd"]
+        else:
+            flags = ["--port", "--stbd"]
+
+        ok = True
+        parts = []
+        for flag in flags:
+            cmd = " ".join(base_parts + [flag])
+            self.logger.info(f"Set ({flag}): {cmd}")
+            result = self.send_command(cmd)
+            success, message = self.parse_response(result)
+            ok = ok and success
+            parts.append(f"{flag[2:]}: {message}")
+        return ok, " | ".join(parts)
     
     # ========================================================================
     # Service callbacks based on 3DSS-DX Control Command Interface Guide
@@ -283,7 +389,7 @@ class SonarControlNode(Node):
     def app_control_callback(self, request, response):
         """
         Handle app control service request.
-        Section 3.3: APP command
+        Section 3.1: APP command
         """
         command = request.command.lower()
         
@@ -321,6 +427,91 @@ class SonarControlNode(Node):
         
         return response
     
+    def gain_callback(self, request, response):
+        """
+        Handle gain settings service request.
+        Section 3.3: GAIN command
+        Command: gain [--const=<value> | --linear=<value> | --log=<value>
+                       | --port | --stbd]
+        Response: okay port(const=0 linear=0.2 log=22.2) stbd(const=0 ...)
+        """
+        command = request.command.lower()
+        side = request.side.lower()
+
+        def side_flag():
+            if side == "port":
+                return "--port"
+            if side in ("starboard", "stbd"):
+                return "--stbd"
+            return ""
+
+        if command == "get":
+            cmd = "gain"
+            flag = side_flag()
+            if flag:
+                cmd = f"gain {flag}"
+        elif command == "set":
+            parts = ["gain"]
+            if request.set_const:
+                if not (-60 <= request.const_gain <= 60):
+                    response.success = False
+                    response.message = "Constant gain must be between -60 and 60 dB"
+                    return response
+                parts.append(f"--const={request.const_gain:g}")
+            if request.set_linear:
+                if not (0.0 <= request.linear_gain <= 3.5):
+                    response.success = False
+                    response.message = "Linear gain must be between 0.0 and 3.5 dB/m"
+                    return response
+                parts.append(f"--linear={request.linear_gain:g}")
+            if request.set_log:
+                if not (0 <= request.log_gain <= 60):
+                    response.success = False
+                    response.message = "Log gain must be between 0 and 60 dB/log(m)"
+                    return response
+                parts.append(f"--log={request.log_gain:g}")
+
+            if len(parts) == 1:
+                response.success = False
+                response.message = ("Must set at least one of const, linear, "
+                                    "or log gain")
+                return response
+
+            response.success, response.message = self._apply_sided_set(
+                parts, side)
+            return response
+        else:
+            response.success = False
+            response.message = f"Unknown command: {command}. Use 'get' or 'set'"
+            return response
+
+        self.logger.info(f"Gain: {cmd}")
+        result = self.send_command(cmd)
+        response.success, response.message = self.parse_response(result)
+
+        # Parse per-side current values, e.g.:
+        #   okay port(const=0 linear=0.2 log=22.2) stbd(const=0 linear=0.2 log=30)
+        if result:
+            port_match = re.search(r'port\(([^)]+)\)', result, re.IGNORECASE)
+            stbd_match = re.search(r'stbd\(([^)]+)\)', result, re.IGNORECASE)
+
+            def grab(block, key):
+                m = re.search(rf'{key}=(-?\d+\.?\d*)', block)
+                return float(m.group(1)) if m else 0.0
+
+            if port_match:
+                blk = port_match.group(1)
+                response.port_const = grab(blk, "const")
+                response.port_linear = grab(blk, "linear")
+                response.port_log = grab(blk, "log")
+            if stbd_match:
+                blk = stbd_match.group(1)
+                response.stbd_const = grab(blk, "const")
+                response.stbd_linear = grab(blk, "linear")
+                response.stbd_log = grab(blk, "log")
+
+        return response
+
     def sidescan_callback(self, request, response):
         """
         Handle sidescan settings service request.
@@ -337,25 +528,17 @@ class SonarControlNode(Node):
             else:
                 cmd = "sidescan"
         elif command == "set":
-            # Build set command
-            cmd_parts = ["sidescan"]
-            
+            # Build set command (side applied explicitly via _apply_sided_set)
+            base = ["sidescan"]
             if request.mode:
-                cmd_parts.append(f"--mode={request.mode}")
+                base.append(f"--mode={request.mode}")
             if request.method:
-                cmd_parts.append(f"--method={request.method}")
+                base.append(f"--method={request.method}")
             if request.beams:
-                cmd_parts.append(f"--beams={request.beams}")
-            
-            # Add side specification
-            side = request.side.lower()
-            if side == "port":
-                cmd_parts.append("--port")
-            elif side == "starboard" or side == "stbd":
-                cmd_parts.append("--stbd")
-            # Both sides if neither specified
-            
-            cmd = " ".join(cmd_parts)
+                base.append(f"--beams={request.beams}")
+            response.success, response.message = self._apply_sided_set(
+                base, request.side)
+            return response
         else:
             response.success = False
             response.message = f"Unknown command: {command}. Use 'get' or 'set'"
@@ -383,34 +566,27 @@ class SonarControlNode(Node):
             else:
                 cmd = "sidescan3d"
         elif command == "set":
-            # Build set command
-            cmd_parts = ["sidescan3d"]
-            
+            # Build set command (side applied explicitly via _apply_sided_set)
+            base = ["sidescan3d"]
             if request.angles > 0:
-                cmd_parts.append(f"--angles={request.angles}")
+                base.append(f"--angles={request.angles}")
             if request.smoothing >= 0:
-                cmd_parts.append(f"--smoothing={request.smoothing}")
+                base.append(f"--smoothing={request.smoothing}")
             if request.threshold != 0.0:
-                cmd_parts.append(f"--threshold={request.threshold}")
+                base.append(f"--threshold={request.threshold}")
             if request.tolerance != 0.0:
-                cmd_parts.append(f"--tolerance={request.tolerance}")
+                base.append(f"--tolerance={request.tolerance}")
             if request.mindepth != 0.0:
-                cmd_parts.append(f"--mindepth={request.mindepth}")
+                base.append(f"--mindepth={request.mindepth}")
             if request.maxdepth != 0.0:
-                cmd_parts.append(f"--maxdepth={request.maxdepth}")
+                base.append(f"--maxdepth={request.maxdepth}")
             if request.swath != 0.0:
-                cmd_parts.append(f"--swath={request.swath}")
+                base.append(f"--swath={request.swath}")
             if request.amp != 0.0:
-                cmd_parts.append(f"--amp={request.amp}")
-            
-            # Add side specification (image filtering applies to both sides)
-            side = request.side.lower()
-            if side == "port":
-                cmd_parts.append("--port")
-            elif side == "starboard" or side == "stbd":
-                cmd_parts.append("--stbd")
-            
-            cmd = " ".join(cmd_parts)
+                base.append(f"--amp={request.amp}")
+            response.success, response.message = self._apply_sided_set(
+                base, request.side)
+            return response
         else:
             response.success = False
             response.message = f"Unknown command: {command}. Use 'get' or 'set'"
@@ -483,26 +659,19 @@ class SonarControlNode(Node):
             else:
                 cmd = "transmit"
         elif command == "set":
-            # Build set command
-            cmd_parts = ["transmit"]
-            
+            # Build set command (side applied explicitly via _apply_sided_set)
+            base = ["transmit"]
             if request.pulse:
-                cmd_parts.append(f"--pulse={request.pulse}")
+                base.append(f"--pulse={request.pulse}")
             if request.power > 0:
-                cmd_parts.append(f"--power={request.power}")
+                base.append(f"--power={request.power}")
             if request.beamwidth > 0:
-                cmd_parts.append(f"--beamwidth={request.beamwidth}")
+                base.append(f"--beamwidth={request.beamwidth}")
             if request.angle != 999:  # Use 999 as sentinel for "not set"
-                cmd_parts.append(f"--angle={request.angle}")
-            
-            # Add side specification
-            side = request.side.lower()
-            if side == "port":
-                cmd_parts.append("--port")
-            elif side == "starboard" or side == "stbd":
-                cmd_parts.append("--stbd")
-            
-            cmd = " ".join(cmd_parts)
+                base.append(f"--angle={request.angle}")
+            response.success, response.message = self._apply_sided_set(
+                base, request.side)
+            return response
         else:
             response.success = False
             response.message = f"Unknown command: {command}. Use 'get' or 'set'"
