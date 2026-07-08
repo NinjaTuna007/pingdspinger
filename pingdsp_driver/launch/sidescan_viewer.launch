@@ -18,25 +18,25 @@
          description="Path to sidescan viewer parameter YAML file"/>
 
     <!-- Commonly-tuned knobs. These override whatever is in params_file. -->
-    <arg name="num_pings" default="2048"
+    <arg name="num_pings" default="512"
          description="Pings (rows) to render in the waterfall"/>
-    <arg name="target_width" default="2048"
+    <arg name="target_width" default="1024"
          description="Rendered width in pixels (every ping binned down to this)"/>
-    <arg name="publish_rate" default="5.0"
+    <arg name="publish_rate" default="2.0"
          description="Live image publish rate in Hz (&lt;=0 disables)"/>
     <arg name="log_min" default="11.5"
          description="log1p(amp) mapped to black (fixed window, no normalisation)"/>
-    <arg name="log_max" default="14.5"
+    <arg name="log_max" default="15.0"
          description="log1p(amp) mapped to white; scales with sonar gain/range"/>
     <arg name="gamma" default="1.0"
          description="Gamma (&lt;1 brightens mid-tones, &gt;1 darkens)"/>
-    <arg name="colormap" default="copper"
-         description="Colormap: copper | bronze | gray"/>
+    <arg name="colormap" default="bronze"
+         description="Colormap: bronze | copper | gray"/>
     <arg name="nadir_bins" default="0"
          description="Pixels each side of nadir (centre) to blank (0=keep all)"/>
-    <arg name="flatten_strength" default="0.0"
+    <arg name="flatten_strength" default="0.70"
          description="Across-track gain flattening, 0=off..1=full (feature pop)"/>
-    <arg name="clahe_clip" default="0.0"
+    <arg name="clahe_clip" default="0.5"
          description="CLAHE local-contrast clip limit, 0=off (~2-4 typical)"/>
     <arg name="clahe_grid" default="8"
          description="CLAHE tile grid size per axis"/>

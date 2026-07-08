@@ -1,17 +1,22 @@
-sidescan_viewer_node:
+# '/**' matches the node under any namespace (the stack runs under /pingdsp).
+# A bare 'sidescan_viewer_node:' key only matches '/sidescan_viewer_node' and is ignored.
+/**:
   ros__parameters:
-    # Number of most-recent pings (rows) to render in the waterfall.
-    num_pings: 2048
+    # Number of most-recent pings (rows) to render in the waterfall. Kept small
+    # (vs the GUI's 2048) because this image goes into bags: a 512x1024x3 frame
+    # is ~1.5 MB, so even at a low rate a long survey bag stays sane.
+    num_pings: 512
 
     # Rendered width in pixels. The raw across-track swath (often several
     # thousand samples) is binned down to this and speckle is averaged out.
     # Note frame size scales as num_pings x target_width x 3 bytes; drop this if
     # streaming to Foxglove gets heavy.
-    target_width: 2048
+    target_width: 1024
 
     # Live image publish rate in Hz (<=0 disables live publishing; the image
-    # is only built when something subscribes to output_topic).
-    publish_rate: 5.0
+    # is only built when something subscribes to output_topic). 2 Hz is plenty
+    # for a scrolling waterfall and keeps the bag light.
+    publish_rate: 2.0
 
     # Fixed log display window (NO normalisation). log1p(amp) is mapped
     # linearly: log_min -> black, log_max -> white, values outside clip.
@@ -20,27 +25,29 @@ sidescan_viewer_node:
     # band. It scales with the sonar gain/range, so re-tune per dataset: raise
     # log_min / lower log_max for punchier contrast, widen for a softer image.
     log_min: 11.5
-    log_max: 14.5
+    log_max: 15.0
 
     # Gamma (<1 brightens mid-tones, >1 darkens).
     gamma: 1.0
 
-    # Colormap: 'copper' (default), 'bronze' or 'gray'.
-    colormap: 'copper'
+    # Colormap: 'bronze' (default), 'copper' or 'gray'. Bronze reads a touch
+    # warmer and gives more tonal separation on the seabed than copper.
+    colormap: 'bronze'
 
     # Blank this many pixels each side of nadir (image centre = closest-range
     # water-column returns). 0 = keep the full swath including the nadir band.
     nadir_bins: 0
 
-    # --- Optional feature-enhancement steps (all off by default; with them off
-    # the image is the plain fixed-log render with NO normalisation) ---
+    # --- Feature-enhancement steps. Defaults match the control GUI preset so the
+    # recorded/streamed image looks the same as the live GUI view. ---
     # Across-track gain flattening, 0=off .. 1=full. Removes the range-dependent
     # brightness gradient (nadir glow) so targets and shadows stand out. This is
-    # the single biggest "make features pop" lever; try ~0.8.
-    flatten_strength: 0.0
+    # the single biggest "make features pop" lever and why the GUI view looks
+    # steadier than a raw fixed-log render.
+    flatten_strength: 0.70
     # CLAHE local-contrast equalisation clip limit (0=off, ~2-4 typical) and the
     # tile grid size. Boosts local texture without blowing out bright areas.
-    clahe_clip: 0.0
+    clahe_clip: 0.5
     clahe_grid: 8
     # Median despeckle kernel (0/1=off, odd >=3). Suppresses speckle and thin
     # bad-ping streaks; 3 is plenty.

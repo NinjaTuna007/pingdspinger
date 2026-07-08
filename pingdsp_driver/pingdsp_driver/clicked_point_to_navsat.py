@@ -49,9 +49,12 @@ class ClickedPointToNavSat(Node):
         self.declare_parameter('input_topic', '/clicked_point')
         self.declare_parameter('output_topic', 'clicked_fix')
         # NavSatFix sources to anchor the geo reference, in priority order. The
-        # first one that has published is used. Covers both the SBG stack and
-        # the sonar driver's embedded-GPS fix.
-        self.declare_parameter('fix_topics', ['pingdsp/fix', 'sonar/fix'])
+        # first one that has published is used. Covers both the SBG stack
+        # (/pingdsp/fix) and the sonar driver's embedded-GPS fix
+        # (/pingdsp/sonar/fix). Absolute names so this bridge can run at the
+        # root namespace while the sonar stack lives under /pingdsp.
+        self.declare_parameter(
+            'fix_topics', ['/pingdsp/fix', '/pingdsp/sonar/fix'])
         # ENU reference frame for the offset maths. Empty => use the clicked
         # point's own frame_id (the Foxglove fixed frame), which the drivers
         # align to the UTM grid. Set this to force a specific frame.

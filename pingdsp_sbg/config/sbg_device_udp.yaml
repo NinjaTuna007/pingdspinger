@@ -80,7 +80,12 @@
 
     # Output configuration (Ellipse-E defaults, 25Hz where applicable)
     output:
-      time_reference: "ros"
+      # ins_unix: stamp messages with the INS absolute time referenced to the
+      # UNIX epoch (GNSS-disciplined). This matches the sonar's embedded ping
+      # timestamp so the pose tree and sonar cloud share one motion-true clock
+      # and stay registered regardless of per-path latency. "ros" would stamp
+      # with wall-clock arrival time, which drifts vs the sonar on replay.
+      time_reference: "ins_unix"
       ros_standard: false
       use_enu: false
       frame_id: "imu_link_ned"

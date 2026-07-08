@@ -43,7 +43,7 @@ Three windows, each split into two panes (left = the stack, right = replayer /
 a useful topic tail):
 
 1. **sonar** — `3dss.launch` (the `tdss_driver`). In `sim` the right pane runs
-   the pcap replayer; in `real` it tails `/sonar/status`.
+   the pcap replayer; in `real` it tails `/pingdsp/sonar/status`.
 2. **viz** — Foxglove bridge (left) + the **3DSS-DX control GUI** (right). The
    GUI's **Sidescan** tab renders the live waterfall in-app (no image topic, so
    bags stay lean) and exposes every visualisation knob as a slider.
@@ -78,7 +78,9 @@ MODE=sim PCAP_SPEED=4.0 ENABLE_GUI=false ./scripts/pingdsp_bringup.sh
 | `ENABLE_VIEWER` | `true` | both | Run `sidescan_viewer_node`: a small, low-rate `sonar/sidescan_image` (2 Hz, 512×1024 bgr8 ≈ 1.5 MB/frame) for Foxglove **and** bags. Knobs match the GUI's default look (`flatten 0.70`, `clahe 0.5`, copper); tune live with `ros2 param set /sidescan_viewer_node …`. |
 | `ENABLE_CLICKED` | `true` | both | Run `clicked_point_to_navsat`: turns Foxglove/RViz `/clicked_point` into a geo-referenced `clicked_fix` (`sensor_msgs/NavSatFix`), anchored off the live `pingdsp/fix` or `sonar/fix` + TF. |
 | `ENABLE_SBG` | `auto` | both | `true` / `false` / `auto`. `auto` = on, but **off** for sonar-only pcaps. |
-| `ENABLE_RECORDER` | `true` | both | Stream the filtered cloud to a UTM-referenced `.xyz` in `pointclouds/` (easting/northing/z, float64). Written incrementally + flushed, so any kill leaves a complete file. CloudCompare prompts for a global shift on import - accept it. Set `false` to skip. (paths/bounds in `config/recorder_params.yaml`) |
+| `DEBUG_SONAR_FIX` | `false` | both | When SBG is on, **also** publish `sonar/fix` (from the embedded NMEA GPS) so it can be compared against the SBG/RTK `pingdsp/fix`. Compare by NMEA UTC time, not arrival time. |
+| `ENABLE_RECORDER` | `true` | both | Stream the cloud to a UTM-referenced `.xyz` in `pointclouds/` (easting/northing/z, float64). Written incrementally + flushed, so any kill leaves a complete file. CloudCompare prompts for a global shift on import - accept it. Set `false` to skip. (paths/bounds in `config/recorder_params.yaml`) |
+| `RECORD_SOURCE` | `raw` | both | Which cloud the recorder saves: `raw` (pristine `sonar/bathymetry`, clean offline in CloudCompare) or `filtered` (live-filtered/lossy `sonar/bathymetry_filtered`). The `pointcloud_filter` runs either way for a clean live Foxglove view. |
 | `REQUIRE_NAV_FIX` | `auto` | both | Gate the odom datum on a full GNSS fix (`solution_mode==4`). `auto` = `false` in sim (bench captures have no fix), `true` in real. |
 | `ROS_SETUP` | _empty_ | both | Extra `setup.bash` to source in every pane (optional overlay). |
 

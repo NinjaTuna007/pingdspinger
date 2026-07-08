@@ -1,4 +1,6 @@
-tdss_driver:
+# '/**' matches the node under any namespace (the stack runs under /pingdsp).
+# A bare 'tdss_driver:' key only matches '/tdss_driver' and is silently ignored.
+/**:
   ros__parameters:
     # Network configuration
     # sonar_host: '127.0.0.1'  # Use localhost for pcap replay testing

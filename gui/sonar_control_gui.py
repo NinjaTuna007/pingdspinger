@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
+import os
 import tkinter as tk
 from tkinter import ttk, scrolledtext, filedialog, messagebox, simpledialog
 import rclpy
 from rclpy.node import Node
+from std_msgs.msg import Float32, Int32
+from nav_msgs.msg import Odometry
 from pingdsp_msg.srv import (
     AppControl,
     SidescanSettings,
@@ -50,7 +53,25 @@ class SonarControlGUI:
         self.status_var = tk.StringVar(value="Ready")
         status_frame = ttk.Frame(self.window, padding=5)
         status_frame.pack(fill="x", padx=10, pady=5)
-        ttk.Label(status_frame, textvariable=self.status_var, relief="sunken", anchor="w").pack(fill="x")
+        ttk.Label(status_frame, textvariable=self.status_var, relief="sunken",
+                  anchor="w").pack(side="left", fill="x", expand=True)
+        # Timing readout: sonar stream lag vs real time, skew vs the SBG pose,
+        # and the local RX backlog (is the driver keeping up?).
+        self.timing_var = tk.StringVar(value="sonar timing: waiting…")
+        self.timing_label = ttk.Label(
+            status_frame, textvariable=self.timing_var, relief="sunken",
+            anchor="e", width=64)
+        self.timing_label.pack(side="left", padx=(6, 0))
+
+        # Timing diagnostics state (updated from ROS callbacks, read by the
+        # periodic _update_timing loop). Kept independent of the sidescan tab so
+        # the readout works even when sidescan rendering is unavailable.
+        self._timing_lock = threading.Lock()
+        self._sonar_latency = None      # now - data.time (s), from the driver
+        self._last_sonar_stamp = None   # sonar acquisition time (float s)
+        self._last_sbg_stamp = None     # SBG /odom message time (float s)
+        self._rx_backlog = None         # bytes queued (kernel + driver buffer)
+        self._start_timing_diag()
         
         # Main split: tabs on top, console log below, joined by a draggable
         # sash so the console vs tab-area sizes can be set by click-dragging.
@@ -828,10 +849,10 @@ class SonarControlGUI:
     def sound_velocity_control(self, command):
         """Call sound velocity service"""
         self.status_var.set(f"Sound velocity: {command}...")
-        self.log(f"Calling /sonar/sound_velocity with command={command}")
+        self.log(f"Calling sonar/sound_velocity with command={command}")
         self.window.update()
         
-        client = self.node.create_client(SoundVelocity, '/sonar/sound_velocity')
+        client = self.node.create_client(SoundVelocity, 'sonar/sound_velocity')
         if not client.wait_for_service(timeout_sec=1.0):
             self.log("ERROR: sound_velocity service unavailable")
             return
@@ -869,43 +890,14 @@ class SonarControlGUI:
             msg = future.result().message if future.result() else "No response"
             self.status_var.set(f"Failed: {msg}")
             self.log(f"✗ FAILED: {msg}")
-            """Call app control service"""
-        self.status_var.set(f"App control: {command}...")
-        self.log(f"Calling /sonar/app_control with command={command}")
-        self.window.update()
-        
-        client = self.node.create_client(AppControl, '/sonar/app_control')
-        if not client.wait_for_service(timeout_sec=1.0):
-            self.log("ERROR: app_control service unavailable")
-            return
-        
-        req = AppControl.Request()
-        req.command = command
-        if command in ["init", "mode"]:
-            req.mode = self.app_mode_var.get()
-        
-        future = client.call_async(req)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
-        
-        if future.result() and future.result().success:
-            msg = f"{command.capitalize()} successful"
-            if future.result().current_mode:
-                msg += f" (mode={future.result().current_mode})"
-            self.status_var.set(msg)
-            self.log(f"✓ SUCCESS: {msg}")
-            self.log(f"  Response: {future.result().message}")
-        else:
-            msg = future.result().message if future.result() else "No response"
-            self.status_var.set(f"Failed: {msg}")
-            self.log(f"✗ FAILED: {msg}")
-    
+
     def app_control(self, command):
         """Call app control service"""
         self.status_var.set(f"App: {command}...")
-        self.log(f"Calling /sonar/app_control with command={command}")
+        self.log(f"Calling sonar/app_control with command={command}")
         self.window.update()
         
-        client = self.node.create_client(AppControl, '/sonar/app_control')
+        client = self.node.create_client(AppControl, 'sonar/app_control')
         if not client.wait_for_service(timeout_sec=1.0):
             self.log("ERROR: app_control service unavailable")
             return
@@ -933,10 +925,10 @@ class SonarControlGUI:
     def sonar_control(self, command):
         """Call sonar control service"""
         self.status_var.set(f"Sonar: {command}...")
-        self.log(f"Calling /sonar/control with command={command}")
+        self.log(f"Calling sonar/control with command={command}")
         self.window.update()
         
-        client = self.node.create_client(SonarControl, '/sonar/control')
+        client = self.node.create_client(SonarControl, 'sonar/control')
         if not client.wait_for_service(timeout_sec=1.0):
             self.log("ERROR: sonar control service unavailable")
             return
@@ -962,10 +954,10 @@ class SonarControlGUI:
     def acquisition_settings(self, command):
         """Call acquisition settings service"""
         self.status_var.set(f"Acquisition: {command}...")
-        self.log(f"Calling /sonar/acquisition with command={command}")
+        self.log(f"Calling sonar/acquisition with command={command}")
         self.window.update()
         
-        client = self.node.create_client(AcquisitionSettings, '/sonar/acquisition')
+        client = self.node.create_client(AcquisitionSettings, 'sonar/acquisition')
         if not client.wait_for_service(timeout_sec=1.0):
             self.log("ERROR: acquisition service unavailable")
             return
@@ -1028,10 +1020,10 @@ class SonarControlGUI:
     def transmit_settings(self, command):
         """Call transmit settings service"""
         self.status_var.set(f"Transmit: {command}...")
-        self.log(f"Calling /sonar/transmit with command={command}")
+        self.log(f"Calling sonar/transmit with command={command}")
         self.window.update()
         
-        client = self.node.create_client(TransmitSettings, '/sonar/transmit')
+        client = self.node.create_client(TransmitSettings, 'sonar/transmit')
         if not client.wait_for_service(timeout_sec=1.0):
             self.log("ERROR: transmit service unavailable")
             return
@@ -1106,10 +1098,10 @@ class SonarControlGUI:
     def sidescan_settings(self, command):
         """Call sidescan settings service"""
         self.status_var.set(f"Sidescan: {command}...")
-        self.log(f"Calling /sonar/sidescan with command={command}")
+        self.log(f"Calling sonar/sidescan with command={command}")
         self.window.update()
         
-        client = self.node.create_client(SidescanSettings, '/sonar/sidescan')
+        client = self.node.create_client(SidescanSettings, 'sonar/sidescan')
         if not client.wait_for_service(timeout_sec=1.0):
             self.log("ERROR: sidescan service unavailable")
             return
@@ -1180,10 +1172,10 @@ class SonarControlGUI:
         """Call sidescan3d settings service"""
         self.status_var.set(f"Sidescan3D: {command}...")
         side = side_override if side_override else self.ss3d_side_var.get()
-        self.log(f"Calling /sonar/sidescan3d with command={command}, side={side}")
+        self.log(f"Calling sonar/sidescan3d with command={command}, side={side}")
         self.window.update()
         
-        client = self.node.create_client(Sidescan3DSettings, '/sonar/sidescan3d')
+        client = self.node.create_client(Sidescan3DSettings, 'sonar/sidescan3d')
         if not client.wait_for_service(timeout_sec=1.0):
             self.log("ERROR: sidescan3d service unavailable")
             return
@@ -1266,10 +1258,10 @@ class SonarControlGUI:
     def bathymetry_settings(self, command):
         """Call bathymetry settings service"""
         self.status_var.set(f"Bathymetry: {command}...")
-        self.log(f"Calling /sonar/bathymetry with command={command}")
+        self.log(f"Calling sonar/bathymetry with command={command}")
         self.window.update()
         
-        client = self.node.create_client(BathymetrySettings, '/sonar/bathymetry')
+        client = self.node.create_client(BathymetrySettings, 'sonar/bathymetry')
         if not client.wait_for_service(timeout_sec=1.0):
             self.log("ERROR: bathymetry service unavailable")
             return
@@ -1359,10 +1351,10 @@ class SonarControlGUI:
     def commit_settings(self):
         """Commit changes to sonar"""
         self.status_var.set("Committing settings...")
-        self.log("Calling /sonar/commit")
+        self.log("Calling sonar/commit")
         self.window.update()
         
-        client = self.node.create_client(CommitSettings, '/sonar/commit')
+        client = self.node.create_client(CommitSettings, 'sonar/commit')
         if not client.wait_for_service(timeout_sec=1.0):
             self.log("ERROR: commit service unavailable")
             return
@@ -1383,10 +1375,10 @@ class SonarControlGUI:
     def file_control(self, command):
         """Call file control service"""
         self.status_var.set(f"File: {command}...")
-        self.log(f"Calling /sonar/file with command={command}")
+        self.log(f"Calling sonar/file with command={command}")
         self.window.update()
         
-        client = self.node.create_client(FileControl, '/sonar/file')
+        client = self.node.create_client(FileControl, 'sonar/file')
         if not client.wait_for_service(timeout_sec=1.0):
             self.log("ERROR: file control service unavailable")
             return
@@ -1419,10 +1411,10 @@ class SonarControlGUI:
     def record_control(self, command):
         """Call record control service"""
         self.status_var.set(f"Record: {command}...")
-        self.log(f"Calling /sonar/record with command={command}")
+        self.log(f"Calling sonar/record with command={command}")
         self.window.update()
         
-        client = self.node.create_client(RecordControl, '/sonar/record')
+        client = self.node.create_client(RecordControl, 'sonar/record')
         if not client.wait_for_service(timeout_sec=1.0):
             self.log("ERROR: record control service unavailable")
             return
@@ -1457,10 +1449,10 @@ class SonarControlGUI:
     def baud_settings(self, device):
         """Call baud settings service"""
         self.status_var.set(f"Baud: {device}...")
-        self.log(f"Calling /sonar/baud for {device}")
+        self.log(f"Calling sonar/baud for {device}")
         self.window.update()
         
-        client = self.node.create_client(BaudSettings, '/sonar/baud')
+        client = self.node.create_client(BaudSettings, 'sonar/baud')
         if not client.wait_for_service(timeout_sec=1.0):
             self.log("ERROR: baud service unavailable")
             return
@@ -1740,6 +1732,11 @@ class SonarControlGUI:
     def ss_ping_callback(self, msg):
         """Store one ping's raw row + its binned log row (ROS thread)."""
         try:
+            # Record the sonar's embedded acquisition stamp for the timing
+            # readout (skew vs the SBG pose) before any heavy processing.
+            st = msg.header.stamp
+            with self._timing_lock:
+                self._last_sonar_stamp = st.sec + st.nanosec * 1e-9
             port = np.asarray(msg.port_sidescan_samples, dtype=np.float32)
             stbd = np.asarray(msg.starboard_sidescan_samples, dtype=np.float32)
             combined = ssi.combine_ping(port, stbd)
@@ -2063,12 +2060,83 @@ class SonarControlGUI:
         self.ss_preset_var.set("Default")
         self.log(f"Deleted sidescan preset '{name}'", level='info')
 
+    # ========================================================================
+    # Sonar timing diagnostics (sonar stream lag vs real time and vs SBG pose)
+    # ========================================================================
+
+    def _start_timing_diag(self):
+        """Subscribe to the timing sources and start the periodic readout.
+
+        No dependency is added to the driver: it publishes a plain Float32
+        delivery latency (now - data.time), and the SBG-vs-sonar skew is derived
+        here from the two streams' embedded header stamps (sonar/ping and odom).
+        """
+        try:
+            self.node.create_subscription(
+                Float32, 'sonar/delivery_latency', self._latency_cb, 10)
+            self.node.create_subscription(
+                Odometry, 'odom', self._odom_cb, 10)
+            self.node.create_subscription(
+                Int32, 'sonar/rx_backlog_bytes', self._backlog_cb, 10)
+        except Exception as e:  # noqa: BLE001 - readout is best-effort
+            self.node.get_logger().warn(f'timing diag subscribe failed: {e}')
+        self.window.after(500, self._update_timing)
+
+    def _latency_cb(self, msg):
+        with self._timing_lock:
+            self._sonar_latency = float(msg.data)
+
+    def _odom_cb(self, msg):
+        s = msg.header.stamp
+        with self._timing_lock:
+            self._last_sbg_stamp = s.sec + s.nanosec * 1e-9
+
+    def _backlog_cb(self, msg):
+        with self._timing_lock:
+            self._rx_backlog = int(msg.data)
+
+    def _update_timing(self):
+        """Refresh the sonar timing readout (Tk thread), every 0.5 s.
+
+        Shows the sonar stream lag vs real time, the skew vs the SBG pose, and
+        the local RX backlog. A large-but-stable lag with ~0 backlog is upstream
+        (control-PC) buffering; a growing backlog is the driver falling behind.
+        """
+        with self._timing_lock:
+            lat = self._sonar_latency
+            son = self._last_sonar_stamp
+            sbg = self._last_sbg_stamp
+            backlog = self._rx_backlog
+        lag = f"lag {lat:+.1f}s" if lat is not None else "lag —"
+        if son is not None and sbg is not None:
+            skew = f"vs SBG {sbg - son:+.1f}s"
+        else:
+            skew = "vs SBG —"
+        blog = f"backlog {backlog / 1e6:.1f}MB" if backlog is not None \
+            else "backlog —"
+        self.timing_var.set(f"sonar: {lag}   {skew}   {blog}")
+        # Flag a growing local backlog (driver falling behind) in red.
+        try:
+            over = backlog is not None and backlog > 1048576
+            self.timing_label.configure(
+                foreground="#c62828" if over else "")
+        except Exception:  # noqa: BLE001 - cosmetic only
+            pass
+        self.window.after(500, self._update_timing)
+
     def run(self):
         self.window.mainloop()
 
 def main():
     rclpy.init()
-    node = rclpy.create_node('sonar_control_gui')
+    # Live under the same namespace as the sonar driver/control stack so the
+    # relative service + topic names (sonar/*, odom) resolve to /<ns>/... .
+    # Defaults to 'pingdsp' to match sbg.launch + 3dss.launch; override with
+    # PINGDSP_NS=... for a different prefix (or '' for the root namespace).
+    ns = os.environ.get('PINGDSP_NS', 'pingdsp').strip()
+    if ns and not ns.startswith('/'):
+        ns = '/' + ns
+    node = rclpy.create_node('sonar_control_gui', namespace=ns or None)
     
     # Spin in a separate thread
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
