@@ -27,7 +27,13 @@ Simple standalone GUI for controlling the PingDSP 3DSS-DX sonar via ROS 2 servic
 ## Features
 - Tabs for app/sonar control, acquisition, transmit, processing, sidescan3d,
   bathymetry, sound velocity, file, record and baud settings (all via the
-  `/sonar/*` services from `sonar_control_node`).
+  `/pingdsp/sonar/*` services from `sonar_control_node`). The GUI joins the
+  `/pingdsp` namespace by default (override with `PINGDSP_NS=...`), so it uses
+  relative service/topic names that resolve under that prefix.
+- **Timing readout** — the top bar shows the sonar stream's delivery lag
+  (`now - embedded acquisition time`, from `sonar/delivery_latency`) and the
+  skew versus the SBG pose (derived here from the `sonar/ping` and `odom`
+  embedded stamps — the driver stays independent of the SBG).
 - **Sidescan tab** — a live sidescan waterfall rendered *inside the GUI* from the
   raw `Ping3DSS` samples (`sonar/ping`). It publishes **no image topic** (so bags
   are not bloated), and every visualisation knob is a live slider: pings, width,

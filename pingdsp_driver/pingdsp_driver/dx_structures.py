@@ -519,27 +519,54 @@ class DxData:
         # Offsets and counts (32 × uint32_t = 128 bytes)
         offsets_counts = struct.unpack('<32I', data[offset:offset+128])
         offset += 128
-        
+
+        # --- Sanity-clamp variable-section (offset, count) pairs ----------
+        # A misaligned/corrupt frame still parses here (the 872-byte header is
+        # fixed-size), but may carry garbage offsets/counts. Every getter loops
+        # range(count), so a bogus count (e.g. ~3e9) spins in pure Python
+        # effectively forever, holding the GIL, stalling the reader thread and
+        # back-pressuring the entire TCP stream. Reject any (offset, count)
+        # that cannot physically fit in the received buffer for its element
+        # stride by zeroing the count so the getter returns empty.
+        buf_len = len(data)
+
+        def _sane(off_idx, cnt_idx, stride):
+            off = offsets_counts[off_idx]
+            cnt = offsets_counts[cnt_idx]
+            if cnt <= 0 or off <= 0 or off >= buf_len:
+                return off, 0
+            if cnt > buf_len or off + cnt * stride > buf_len:
+                return off, 0
+            return off, cnt
+
+        ascii_off, ascii_cnt = _sane(0, 1, 280)         # AsciiSentence stride
+        p_ss_off, p_ss_cnt = _sane(2, 3, 8)             # SidescanPoint stride
+        s_ss_off, s_ss_cnt = _sane(4, 5, 8)
+        p_ss3_off, p_ss3_cnt = _sane(6, 7, SidescanPoint3D.SIZE)
+        s_ss3_off, s_ss3_cnt = _sane(8, 9, SidescanPoint3D.SIZE)
+        p_bat_off, p_bat_cnt = _sane(10, 11, BathymetryPoint.SIZE)
+        s_bat_off, s_bat_cnt = _sane(12, 13, BathymetryPoint.SIZE)
+
         return cls(
             ping_id=ping_id,
             time=time,
             time_range_zero=time_range_zero,
             parameters=parameters,
             system_info=system_info,
-            ascii_sentence_offset=offsets_counts[0],
-            ascii_sentence_count=offsets_counts[1],
-            port_sidescan_offset=offsets_counts[2],
-            port_sidescan_count=offsets_counts[3],
-            starboard_sidescan_offset=offsets_counts[4],
-            starboard_sidescan_count=offsets_counts[5],
-            port_sidescan3d_offset=offsets_counts[6],
-            port_sidescan3d_count=offsets_counts[7],
-            starboard_sidescan3d_offset=offsets_counts[8],
-            starboard_sidescan3d_count=offsets_counts[9],
-            port_bathymetry_offset=offsets_counts[10],
-            port_bathymetry_count=offsets_counts[11],
-            starboard_bathymetry_offset=offsets_counts[12],
-            starboard_bathymetry_count=offsets_counts[13],
+            ascii_sentence_offset=ascii_off,
+            ascii_sentence_count=ascii_cnt,
+            port_sidescan_offset=p_ss_off,
+            port_sidescan_count=p_ss_cnt,
+            starboard_sidescan_offset=s_ss_off,
+            starboard_sidescan_count=s_ss_cnt,
+            port_sidescan3d_offset=p_ss3_off,
+            port_sidescan3d_count=p_ss3_cnt,
+            starboard_sidescan3d_offset=s_ss3_off,
+            starboard_sidescan3d_count=s_ss3_cnt,
+            port_bathymetry_offset=p_bat_off,
+            port_bathymetry_count=p_bat_cnt,
+            starboard_bathymetry_offset=s_bat_off,
+            starboard_bathymetry_count=s_bat_cnt,
             recorded_filename_offset=offsets_counts[14],
             recorded_version_offset=offsets_counts[15],
             reserved=list(offsets_counts[16:32]),
@@ -684,6 +711,53 @@ class DxData:
             xyz = xyz[valid]
 
         return xyz
+
+    def get_all_bathymetry_xyzi(
+            self, transducer_tilt_deg: float = 30.0) -> np.ndarray:
+        """All bathymetry as Nx4 (x, y, z, intensity), corrupt points removed.
+
+        Unlike pairing get_all_bathymetry_xyz() with a separately gathered
+        amplitude list, this filters xyz AND intensity with the *same* validity
+        mask, so the columns always stay aligned -- a single corrupt point no
+        longer causes a length mismatch that drops the whole ping.
+        """
+        port_points = self.get_port_bathymetry()
+        starboard_points = self.get_starboard_bathymetry()
+
+        n_port = len(port_points)
+        n_stbd = len(starboard_points)
+        n_total = n_port + n_stbd
+
+        if n_total == 0:
+            return np.empty((0, 4), dtype=np.float32)
+
+        rows = [(p.range_m, p.angle_rad, p.amplitude) for p in port_points]
+        rows += [(p.range_m, p.angle_rad, p.amplitude)
+                 for p in starboard_points]
+        all_data = np.array(rows, dtype=np.float32)
+        ranges = all_data[:, 0]
+        angles = all_data[:, 1]
+        amplitudes = all_data[:, 2]
+
+        tilt_rad = np.radians(transducer_tilt_deg)
+        total_angles = tilt_rad + angles
+        horizontal = ranges * np.cos(total_angles)
+        depth = ranges * np.sin(total_angles)
+
+        xyzi = np.zeros((n_total, 4), dtype=np.float32)
+        xyzi[:n_port, 1] = horizontal[:n_port]    # Port: positive Y
+        xyzi[n_port:, 1] = -horizontal[n_port:]   # Starboard: negative Y
+        xyzi[:, 2] = depth
+        xyzi[:, 3] = np.nan_to_num(
+            amplitudes, nan=0.0, posinf=0.0, neginf=0.0)
+
+        SANE_MAX_RANGE = 5000.0  # metres
+        valid = (np.isfinite(ranges) & np.isfinite(angles)
+                 & (ranges >= 0.0) & (ranges <= SANE_MAX_RANGE))
+        if not bool(valid.all()):
+            xyzi = xyzi[valid]
+
+        return xyzi
     
     def get_recorded_filename(self) -> str:
         """Extract recorded filename string."""

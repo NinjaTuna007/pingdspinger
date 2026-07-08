@@ -17,6 +17,8 @@
          description="Enable point cloud filtering"/>
     <arg name="enable_recorder" default="false" 
          description="Enable point cloud recording"/>
+    <arg name="recorder_input_topic" default="sonar/bathymetry"
+         description="Cloud the recorder saves. Default raw (sonar/bathymetry) for pristine post-processing; use sonar/bathymetry_filtered to save the live-filtered cloud."/>
     <arg name="enable_control" default="true" 
          description="Enable sonar control interface"/>
     <arg name="record_bag" default="false" 
@@ -28,35 +30,48 @@
     <arg name="publish_navsatfix" default="true"
          description="Republish the GPS embedded in the sonar NMEA stream as sensor_msgs/NavSatFix (sonar/fix). Set false when the SBG stack owns the geo fix."/>
     <arg name="use_sonar_time" default="true"
-         description="Stamp pings with the sonar's GNSS-disciplined acquisition time (keeps data aligned to the real-time SBG pose under stream latency). Falls back to arrival time if the sonar clock looks unsynced."/>
-    
-    <!-- 3DSS-DX Driver Node -->
-    <node pkg="pingdsp_driver" exec="tdss_driver" name="tdss_driver" output="screen">
-        <param from="$(var config_file)"/>
-        <param name="sonar_host" value="$(var sonar_host)"/>
-        <param name="sonar_port" value="$(var sonar_port)"/>
-        <param name="publish_tf" value="$(var publish_tf)"/>
-        <param name="publish_odometry" value="$(var publish_odometry)"/>
-        <param name="publish_navsatfix" value="$(var publish_navsatfix)"/>
-        <param name="use_sonar_time" value="$(var use_sonar_time)"/>
-    </node>
-    
-    <!-- Point Cloud Filter Node (optional) -->
-    <node pkg="pingdsp_driver" exec="pointcloud_filter" name="pointcloud_filter" output="screen" if="$(var enable_filter)">
-        <param from="$(var filter_config)"/>
-    </node>
-    
-    <!-- Point Cloud Recorder Node (optional) -->
-    <node pkg="pingdsp_driver" exec="pointcloud_recorder" name="pointcloud_recorder" output="screen" if="$(var enable_recorder)">
-        <param from="$(var recorder_config)"/>
-    </node>
-    
-    <!-- Sonar Control Node (optional) -->
-    <node pkg="pingdsp_driver" exec="sonar_control_node" name="sonar_control_node" output="screen" if="$(var enable_control)">
-        <param from="$(var control_config)"/>
-        <param name="sonar_host" value="$(var sonar_host)"/>
-    </node>
-    
+         description="Always stamp pings with the sonar's GNSS-disciplined embedded acquisition time (keeps data aligned to the real-time SBG pose under stream latency). Never falls back to arrival time on skew; wall time is used only if a ping carries no embedded time."/>
+    <arg name="sonar_time_max_skew" default="5.0"
+         description="Plausibility threshold only: if the embedded time differs from the node clock by more than this, a throttled warning is emitted (embedded time is still used). 5s on live hardware (a healthy stream sits well under a second; larger means the control PC is backlogged or the host clock is unsynced); set very large for pcap replay to silence the warning (embedded time is the hours-old capture time but still correct)."/>
+    <arg name="namespace" default="pingdsp"
+         description="Namespace for the sonar driver + control/filter/recorder. Matches the SBG stack so everything lives under one prefix, e.g. /pingdsp/sonar/*. The control GUI/viewer must use the same namespace (they default to 'pingdsp')."/>
+
+    <!-- Everything under the shared namespace (topics/services become
+         /<namespace>/sonar/*, /<namespace>/vehicle/*). TF frame names are
+         global and unaffected. -->
+    <group>
+        <push-ros-namespace namespace="$(var namespace)"/>
+
+        <!-- 3DSS-DX Driver Node -->
+        <node pkg="pingdsp_driver" exec="tdss_driver" name="tdss_driver" output="screen">
+            <param from="$(var config_file)"/>
+            <param name="sonar_host" value="$(var sonar_host)"/>
+            <param name="sonar_port" value="$(var sonar_port)"/>
+            <param name="publish_tf" value="$(var publish_tf)"/>
+            <param name="publish_odometry" value="$(var publish_odometry)"/>
+            <param name="publish_navsatfix" value="$(var publish_navsatfix)"/>
+            <param name="use_sonar_time" value="$(var use_sonar_time)"/>
+            <param name="sonar_time_max_skew" value="$(var sonar_time_max_skew)"/>
+        </node>
+
+        <!-- Point Cloud Filter Node (optional) -->
+        <node pkg="pingdsp_driver" exec="pointcloud_filter" name="pointcloud_filter" output="screen" if="$(var enable_filter)">
+            <param from="$(var filter_config)"/>
+        </node>
+
+        <!-- Point Cloud Recorder Node (optional) -->
+        <node pkg="pingdsp_driver" exec="pointcloud_recorder" name="pointcloud_recorder" output="screen" if="$(var enable_recorder)">
+            <param from="$(var recorder_config)"/>
+            <param name="input_topic" value="$(var recorder_input_topic)"/>
+        </node>
+
+        <!-- Sonar Control Node (optional) -->
+        <node pkg="pingdsp_driver" exec="sonar_control_node" name="sonar_control_node" output="screen" if="$(var enable_control)">
+            <param from="$(var control_config)"/>
+            <param name="sonar_host" value="$(var sonar_host)"/>
+        </node>
+    </group>
+
     <!-- ROS 2 Bag Recorder (optional) -->
     <executable cmd="ros2 bag record -a" output="screen" if="$(var record_bag)" cwd="$(find-pkg-share pingdsp_driver)/../../../bags"/>
 </launch>

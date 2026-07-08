@@ -166,14 +166,19 @@ class SonarControlNode(Node):
         
         except socket.error as e:
             self.logger.error(f"Connection error: {e}")
+            self.disconnect()
+            return False
+
+    def disconnect(self):
+        """Close the control socket if open (safe to call repeatedly)."""
+        if self.control_socket is not None:
             try:
                 self.control_socket.close()
-            except:
+            except OSError:
                 pass
-            self.control_socket = None
-            self.connected = False
-            self.logger.info("Disconnected from control interface")
-    
+        self.control_socket = None
+        self.connected = False
+
     def send_command(self, command: str) -> Optional[str]:
         """
         Send ASCII command to sonar and receive response.

@@ -189,7 +189,7 @@ ros2 param get /tdss_driver sonar_host
 ### No data published
 
 - Check that sonar is transmitting (verify with manufacturer's software)
-- Monitor status topic: `ros2 topic echo /sonar/status`
+- Monitor status topic: `ros2 topic echo /pingdsp/sonar/status`
 - Verify active topics: `ros2 topic list`
 - Check node logs: `ros2 node info /tdss_driver`
 
@@ -206,23 +206,26 @@ source install/setup.bash
 # Test with pcap replay
 ros2 launch pingdspinger test_driver.launch.py
 
-# Check topics are publishing
+# Check topics are publishing (the stack runs under the /pingdsp namespace)
 ros2 topic list
-ros2 topic hz /sonar/bathymetry
-ros2 topic echo /sonar/status --no-arr
+ros2 topic hz /pingdsp/sonar/bathymetry
+ros2 topic echo /pingdsp/sonar/status --no-arr
 ```
 
 ### Monitor Data Flow
 
 ```bash
 # Watch bathymetry point cloud rate
-ros2 topic hz /sonar/bathymetry
+ros2 topic hz /pingdsp/sonar/bathymetry
 
 # View raw NMEA/TSS1 sentences
-ros2 topic echo /sonar/nmea
+ros2 topic echo /pingdsp/sonar/nmea
+
+# Sonar delivery latency (now - embedded acquisition time), seconds
+ros2 topic echo /pingdsp/sonar/delivery_latency
 
 # Monitor vehicle trajectory
-ros2 topic echo /vehicle/path --no-arr
+ros2 topic echo /pingdsp/vehicle/path --no-arr
 
 # Check TF tree
 ros2 run tf2_tools view_frames
@@ -345,7 +348,7 @@ nc -zv 192.168.228.50 23848
 ### No data published
 
 - Check that sonar is transmitting (verify with manufacturer's software)
-- Monitor status topic: `ros2 topic echo /sonar/status`
+- Monitor status topic: `ros2 topic echo /pingdsp/sonar/status`
 - Check logs: `ros2 node logs /tdss_driver`
 
 ### Invalid preamble errors

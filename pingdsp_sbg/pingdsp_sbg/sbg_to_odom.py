@@ -29,7 +29,7 @@ from pingdsp_sbg import sbg_transforms as st
 import rclpy
 from rclpy.node import Node
 from sbg_driver.msg import (SbgEkfEuler, SbgEkfNav, SbgEkfQuat, SbgImuData,
-                            SbgImuShort)
+                            SbgImuShort, SbgUtcTime)
 from sensor_msgs.msg import NavSatFix, NavSatStatus
 from std_msgs.msg import Float32
 from tf2_ros import TransformBroadcaster
@@ -49,6 +49,7 @@ class SbgToOdom(Node):
         self.declare_parameter('ekf_euler_topic', 'sbg/ekf_euler')
         self.declare_parameter('imu_topic', 'sbg/imu_data')
         self.declare_parameter('imu_short_topic', 'sbg/imu_short')
+        self.declare_parameter('utc_topic', 'sbg/utc_time')
         # Where orientation comes from: 'quat' (SbgEkfQuat only), 'euler'
         # (SbgEkfEuler only), or 'auto' (use quat when present, else euler).
         # The PingDSP Ellipse streams EKF_EULER (+ IMU_SHORT) but not EKF_QUAT,
@@ -62,6 +63,14 @@ class SbgToOdom(Node):
         # Map panel (and other geo tools) can plot the rig on a real map.
         self.declare_parameter('publish_navsatfix', True)
         self.declare_parameter('navsatfix_topic', 'fix')
+        # Stamp odom/TF with the SBG message's embedded acquisition time rather
+        # than wall-clock arrival time. With the sbg_driver set to
+        # time_reference:=ins_unix this is the GNSS-referenced UNIX time, which
+        # matches the sonar's embedded ping timestamp - so the pose tree and
+        # the sonar cloud share one motion clock and stay registered on turns
+        # regardless of per-path processing latency (essential for pcap replay,
+        # and strictly better on live hardware too).
+        self.declare_parameter('use_message_time', True)
 
         prefix = self.get_parameter('frame_prefix').value
         nav_topic = self.get_parameter('ekf_nav_topic').value
@@ -69,6 +78,7 @@ class SbgToOdom(Node):
         euler_topic = self.get_parameter('ekf_euler_topic').value
         imu_topic = self.get_parameter('imu_topic').value
         imu_short_topic = self.get_parameter('imu_short_topic').value
+        utc_topic = self.get_parameter('utc_topic').value
         self.attitude_source = str(
             self.get_parameter('attitude_source').value).lower()
         odom_topic = self.get_parameter('odom_topic').value
@@ -78,6 +88,8 @@ class SbgToOdom(Node):
         self.publish_navsat = bool(
             self.get_parameter('publish_navsatfix').value)
         navsatfix_topic = self.get_parameter('navsatfix_topic').value
+        self.use_message_time = bool(
+            self.get_parameter('use_message_time').value)
 
         self.odom_frame = '{}/odom'.format(prefix)
         self.base_frame = '{}/base_link'.format(prefix)
@@ -90,6 +102,20 @@ class SbgToOdom(Node):
         # Latest state.
         self.have_position = False
         self.have_orientation = False
+        # Embedded acquisition stamp of the most recent EKF nav fix; used to
+        # timestamp odom/TF when use_message_time is set.
+        self._last_nav_stamp = None
+        # True once the SBG reports a GNSS/UTC-disciplined clock. Until then the
+        # driver stamps ins_unix with an internal (wall-clock-ish) time; on pcap
+        # replay that internal time is ~now while the real capture time is hours
+        # older, so publishing before UTC lock would put a far-future transform
+        # into every listener's TF buffer and permanently starve the correct
+        # (GNSS-timed) ones as TF_OLD_DATA. So with use_message_time we simply
+        # wait for this flag before broadcasting anything.
+        self._utc_valid = False
+        # Seconds (float) of the last stamp actually broadcast, to keep the TF
+        # stream strictly monotonic (see publish()).
+        self._last_pub_t = None
         # When attitude_source == 'auto' and a quaternion has arrived recently,
         # ignore Euler updates so the (redundant) quat wins. Reset every quat.
         self._last_quat_time = None
@@ -124,6 +150,7 @@ class SbgToOdom(Node):
         self.latlon_pub = self.create_publisher(GeoPoint, 'latlon', 10)
 
         self.create_subscription(SbgEkfNav, nav_topic, self.nav_callback, 10)
+        self.create_subscription(SbgUtcTime, utc_topic, self.utc_callback, 10)
         if self.attitude_source in ('auto', 'quat'):
             self.create_subscription(
                 SbgEkfQuat, quat_topic, self.quat_callback, 10)
@@ -162,8 +189,23 @@ class SbgToOdom(Node):
                 self.x_offset, self.y_offset))
         return True
 
+    def utc_callback(self, msg: SbgUtcTime):
+        """Latch when the SBG clock becomes GNSS/UTC-disciplined.
+
+        clock_utc_status: 0 = no UTC (internal propagation), 1 = valid UTC but
+        no leap seconds, 2 = valid UTC with leap seconds. Anything >= 1 means
+        the ins_unix stamps now carry real GNSS time, which is what we require
+        before broadcasting georeferenced transforms.
+        """
+        if not self._utc_valid and msg.clock_status.clock_utc_status >= 1:
+            self._utc_valid = True
+            self.get_logger().info(
+                'SBG clock UTC-synchronised (utc_status=%d); broadcasting '
+                'GNSS-timed odom/TF now.' % msg.clock_status.clock_utc_status)
+
     def nav_callback(self, msg: SbgEkfNav):
         """Convert a fix to a local ENU position + body velocity."""
+        self._last_nav_stamp = msg.header.stamp
         self.latitude = msg.latitude
         self.longitude = msg.longitude
         self.altitude = msg.altitude
@@ -287,7 +329,34 @@ class SbgToOdom(Node):
                 and self.have_orientation):
             return
 
-        now = self.get_clock().now().to_msg()
+        # Prefer the SBG message's embedded (GNSS-referenced) acquisition time
+        # so the pose tree shares the sonar's clock. Two guards keep the TF
+        # stream clean:
+        #   1. Wait for UTC lock (_utc_valid). Before it the ins_unix stamp is
+        #      the driver's internal ~wall-clock time; on replay that is hours
+        #      ahead of the real capture time, so emitting it would poison every
+        #      listener's TF buffer (far-future entry) and starve the correct
+        #      GNSS-timed transforms as TF_OLD_DATA.
+        #   2. Once locked, stay strictly monotonic: skip a stamp that is <= the
+        #      last one (the timer outruns the nav rate) or an implausible
+        #      forward jump, so a stray stamp can never re-poison the buffer.
+        # Fall back to wall time only when message-time is disabled (e.g. a
+        # GPS-less bench where no georeferenced recording is expected).
+        if self.use_message_time:
+            if not self._utc_valid:
+                return  # hold off until the SBG clock is GNSS-disciplined
+            nav_stamp = self._last_nav_stamp
+            if nav_stamp is None or nav_stamp.sec <= 0:
+                return  # no trustworthy embedded time yet - do not emit
+            t = nav_stamp.sec + nav_stamp.nanosec * 1e-9
+            if self._last_pub_t is not None:
+                dt = t - self._last_pub_t
+                if dt <= 0.0 or dt > 60.0:
+                    return  # backwards / duplicate / implausible jump: skip
+            self._last_pub_t = t
+            now = nav_stamp
+        else:
+            now = self.get_clock().now().to_msg()
         qx, qy, qz, qw = self.q_enu_xyzw
 
         odom = Odometry()

@@ -64,6 +64,14 @@ class PointCloudRecorder(Node):
         # Flush cadence (pings). 1 == flush every ping (safest).
         self.declare_parameter('flush_every', 1)
 
+        # TF buffer depth (seconds). The 3DSS control PC buffers the sonar
+        # stream internally, so pings arrive tens of seconds after acquisition
+        # (their embedded timestamp), while the SBG pose is real-time. The
+        # buffer must retain pose history at least this far back so each late
+        # ping is transformed with the pose from its true acquisition time
+        # rather than the current pose (which would smear the cloud on turns).
+        self.declare_parameter('tf_buffer_sec', 90.0)
+
         self.output_dir = os.path.expanduser(
             self.get_parameter('output_dir').value)
         self.output_filename = self.get_parameter('output_filename').value
@@ -75,6 +83,7 @@ class PointCloudRecorder(Node):
             self.get_parameter('max_horizontal').value)
         self.max_abs_z = float(self.get_parameter('max_abs_z').value)
         self.flush_every = max(1, int(self.get_parameter('flush_every').value))
+        self.tf_buffer_sec = float(self.get_parameter('tf_buffer_sec').value)
 
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -86,8 +95,11 @@ class PointCloudRecorder(Node):
         self._min = np.array([np.inf, np.inf, np.inf])
         self._max = np.array([-np.inf, -np.inf, -np.inf])
         self._sum = np.zeros(3)
+        # Clouds skipped because no pose was available at their acquisition time.
+        self.dropped_tf = 0
 
-        self.tf_buffer = Buffer()
+        self.tf_buffer = Buffer(
+            cache_time=Duration(seconds=self.tf_buffer_sec))
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # Open the output file up front and stream into it.
@@ -145,14 +157,18 @@ class PointCloudRecorder(Node):
         return None
 
     def _lookup(self, source_frame, stamp):
-        """Transform source -> resolved frame; stamped first, else latest."""
-        try:
-            return self.tf_buffer.lookup_transform(
-                self.resolved_frame, source_frame, stamp,
-                timeout=Duration(seconds=0.1))
-        except Exception:
-            return self.tf_buffer.lookup_transform(
-                self.resolved_frame, source_frame, Time())
+        """Transform source -> resolved frame at the cloud's acquisition time.
+
+        Strictly uses the stamped time. Falling back to the latest transform
+        would place a late-arriving ping at the *current* pose instead of the
+        pose when it was acquired, silently smearing the cloud on turns/return
+        passes - exactly the artefact this recorder exists to avoid. If the pose
+        for this stamp is not in the TF buffer (skew larger than tf_buffer_sec),
+        the caller drops the cloud instead.
+        """
+        return self.tf_buffer.lookup_transform(
+            self.resolved_frame, source_frame, stamp,
+            timeout=Duration(seconds=0.1))
 
     @staticmethod
     def _matrix(transform):
@@ -191,10 +207,13 @@ class PointCloudRecorder(Node):
             try:
                 transform = self._lookup(source_frame, msg.header.stamp)
             except Exception as e:  # noqa: BLE001
-                if self.ping_count == 0:
+                self.dropped_tf += 1
+                if self.ping_count == 0 or self.dropped_tf % 100 == 1:
                     self.get_logger().warning(
-                        f'TF {source_frame} -> {self.resolved_frame} '
-                        f'unavailable: {e}')
+                        f'No pose at cloud time for {source_frame} -> '
+                        f'{self.resolved_frame} (dropped {self.dropped_tf} '
+                        f'clouds); increase tf_buffer_sec if this persists. '
+                        f'({e})')
                 return
 
             # Read the whole cloud as float64 Nx4.

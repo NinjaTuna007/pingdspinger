@@ -1,11 +1,17 @@
-pointcloud_recorder:
+# '/**' matches the node under any namespace (the stack runs under /pingdsp), so
+# these params actually apply. A bare 'pointcloud_recorder:' key would only match
+# '/pointcloud_recorder' and be silently ignored once namespaced.
+/**:
   ros__parameters:
     # Output settings
     output_dir: '/home/shekharu/colcon_ws/src/my_pkgs/pingdspinger/pointclouds'
     output_filename: ''  # Auto-generate timestamp-based filename if empty
 
-    # Input topic (use filtered or raw)
-    input_topic: 'sonar/bathymetry_filtered'  # Or 'sonar/bathymetry' for raw
+    # Input topic. Default is the live-filtered cloud so the saved .xyz is clean
+    # for direct use in CloudCompare. Set to 'sonar/bathymetry' to instead record
+    # the raw (pristine but noisier) cloud for fully offline cleaning. The bringup
+    # controls this via RECORD_SOURCE (filtered|raw), which overrides this value.
+    input_topic: 'sonar/bathymetry_filtered'
 
     # Global, UTM-aligned frame to record points in. The first frame that TF can
     # resolve is used: 'utm' for the SBG stack, 'map' for the sonar-only stack

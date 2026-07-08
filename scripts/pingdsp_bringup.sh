@@ -67,9 +67,11 @@ ENABLE_CLICKED="${ENABLE_CLICKED:-true}"     # run clicked_point_to_navsat: /cli
 ENABLE_SBG="${ENABLE_SBG:-auto}"             # true | false | auto (auto: on, but off for sonar-only pcaps)
 DEBUG_SONAR_FIX="${DEBUG_SONAR_FIX:-false}"  # when SBG is on, ALSO publish sonar/fix (embedded NMEA GPS) so you
                                              #   can compare it against the SBG/RTK /pingdsp/fix (debugging)
-ENABLE_RECORDER="${ENABLE_RECORDER:-true}"   # stream filtered cloud -> UTM .xyz (CloudCompare-ready) in
-                                             #   pointclouds/; written incrementally so any kill leaves a
-                                             #   complete file. Set false to skip. (config/recorder_params.yaml)
+ENABLE_RECORDER="${ENABLE_RECORDER:-true}"   # stream cloud -> UTM .xyz (CloudCompare-ready) in pointclouds/;
+                                             #   written incrementally so any kill leaves a complete file.
+                                             #   Set false to skip. (config/recorder_params.yaml)
+RECORD_SOURCE="${RECORD_SOURCE:-filtered}"   # which cloud the recorder saves: filtered (live-filtered, clean) |
+                                             #   raw (pristine but noisier, clean offline). Filter always runs.
 REQUIRE_NAV_FIX="${REQUIRE_NAV_FIX:-auto}"   # true | false | auto (auto: false in sim, true in real)
 ROS_SETUP="${ROS_SETUP:-}"                   # extra setup.bash to source (optional)
 
@@ -124,6 +126,15 @@ if [[ -n "${ROS_SETUP:-}" ]]; then
     SOURCE_CMD="$SOURCE_CMD && source '$ROS_SETUP'"
 fi
 
+# Which cloud the recorder saves. Raw keeps the on-disk .xyz pristine for
+# offline cleanup; the live pointcloud_filter still runs regardless (for viz).
+case "$RECORD_SOURCE" in
+    raw)      RECORD_TOPIC="sonar/bathymetry" ;;
+    filtered) RECORD_TOPIC="sonar/bathymetry_filtered" ;;
+    *) echo "RECORD_SOURCE must be 'raw' or 'filtered' (got '$RECORD_SOURCE')." >&2; exit 1 ;;
+esac
+RECORDER_ARGS="enable_recorder:=$ENABLE_RECORDER recorder_input_topic:=$RECORD_TOPIC"
+
 # When the SBG stack runs it owns the map/odom/base_link TF tree and the
 # vehicle odometry, so the sonar driver must not duplicate them. The sonar
 # frame then hangs off pingdsp/base_link via the static TF in sbg.launch.
@@ -169,14 +180,18 @@ if [[ "$MODE" == "real" ]]; then
     if [[ -n "$SONAR_HOST" ]]; then
         SONAR_ARGS="sonar_host:=$SONAR_HOST"
     fi
-    SONAR_CMD="ros2 launch pingdsp_driver 3dss.launch enable_control:=true record_bag:=$ENABLE_BAG enable_recorder:=$ENABLE_RECORDER $SONAR_TF_ARGS $SONAR_ARGS"
-    SONAR_STATUS_CMD="sleep 3; ros2 topic echo /sonar/status std_msgs/msg/String --field data"
+    SONAR_CMD="ros2 launch pingdsp_driver 3dss.launch enable_control:=true record_bag:=$ENABLE_BAG $RECORDER_ARGS $SONAR_TF_ARGS $SONAR_ARGS"
+    SONAR_STATUS_CMD="sleep 3; ros2 topic echo /pingdsp/sonar/status std_msgs/msg/String --field data"
 else
     # Sim: run the REAL driver against a local TCP server fed from the pcap.
     # No control channel exists in a replay, so the control GUI stays off.
     # tdss_driver only retries for ~2s, so it sleeps briefly to let the
     # replayer's TCP server come up first.
-    SONAR_CMD="sleep 4; ros2 launch pingdsp_driver 3dss.launch enable_control:=false sonar_host:=127.0.0.1 sonar_port:=$SIM_TCP_PORT enable_recorder:=$ENABLE_RECORDER $SONAR_TF_ARGS"
+    # In replay the sonar's embedded acquisition time is the (hours-old) capture
+    # time - correct, but far from wall-now - so widen the skew guard to keep
+    # using it. Combined with SBG time_reference:=ins_unix (both on GNSS/UNIX
+    # time), the cloud stays registered independent of per-path latency.
+    SONAR_CMD="sleep 4; ros2 launch pingdsp_driver 3dss.launch enable_control:=false sonar_host:=127.0.0.1 sonar_port:=$SIM_TCP_PORT sonar_time_max_skew:=1000000000000.0 $RECORDER_ARGS $SONAR_TF_ARGS"
     # Second pane: the unified replayer (sonar TCP + SBG UDP on one clock). It
     # binds the TCP server immediately, then waits for the driver to connect
     # before starting the shared clock (so sonar + SBG stay aligned).
@@ -190,8 +205,10 @@ FOXGLOVE_CMD="ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=$FOXG
 # Live sidescan is also viewable in the control GUI's "Sidescan" tab. The
 # viewer node here additionally publishes a small, low-rate sonar/sidescan_image
 # (so it can be seen in Foxglove and recorded) without bloating the bag.
-GUI_CMD="python3 '$PKG_DIR/gui/sonar_control_gui.py'"
-VIEWER_CMD="ros2 run pingdsp_driver sidescan_viewer_node"
+# The GUI + viewer live under the same namespace as the sonar driver stack
+# (/pingdsp) so their relative topics/services resolve to /pingdsp/sonar/*.
+GUI_CMD="PINGDSP_NS=pingdsp python3 '$PKG_DIR/gui/sonar_control_gui.py'"
+VIEWER_CMD="ros2 run pingdsp_driver sidescan_viewer_node --ros-args -r __ns:=/pingdsp"
 # Bridges Foxglove/RViz '/clicked_point' to a geo-referenced NavSatFix.
 CLICKED_CMD="ros2 run pingdsp_driver clicked_point_to_navsat"
 

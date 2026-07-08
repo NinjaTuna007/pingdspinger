@@ -21,7 +21,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import PointCloud2, PointField, NavSatFix, NavSatStatus
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import Path
-from std_msgs.msg import Header, String
+from std_msgs.msg import Header, String, Float32, Int32
 from tf2_ros import TransformBroadcaster
 
 from pingdsp_msg.msg import Ping3DSS
@@ -30,6 +30,7 @@ import numpy as np
 import logging
 import threading
 import time
+from array import array
 from typing import Optional
 
 from pingdsp_driver.tcp_client import TcpClient
@@ -70,9 +71,33 @@ class TdssDxDriver(Node):
         # embedded, GNSS-disciplined timestamp) instead of the arrival time.
         # This keeps sonar data correctly aligned with the real-time SBG pose
         # tree even if the TCP stream is delivered with some latency, so
-        # georeferenced clouds do not smear on turns/return passes. Falls back
-        # to arrival time automatically if the sonar clock looks unsynced.
+        # georeferenced clouds do not smear on turns/return passes. When True
+        # (default) the embedded time is ALWAYS used - we never fall back to
+        # arrival time (that would re-smear the cloud); wall time is used only
+        # if a ping carries no embedded time at all. Set False only for a
+        # GPS-less bench where no georeferenced recording is expected.
         self.declare_parameter('use_sonar_time', True)
+        # Plausibility threshold only: if the embedded acquisition time differs
+        # from the node clock by more than this, a throttled warning is emitted
+        # (the embedded time is STILL used). On live hardware the sonar clock
+        # tracks "now" and delivery is near-instant, so a healthy stream sits
+        # well under a second; 5s therefore flags a real problem - the control
+        # PC backlogging/buffering the stream, or an unsynced host clock. In
+        # pcap replay the embedded time is the (hours-old) capture time -
+        # correct but far from wall-now - so the bringup sets this very large to
+        # silence the otherwise-constant warning.
+        self.declare_parameter('sonar_time_max_skew', 5.0)
+        # RX backlog warning threshold (bytes). The reader thread drains the
+        # socket at line rate; if the kernel socket queue + our buffer grow past
+        # this, the driver itself is falling behind (CPU-bound), which is
+        # different from upstream delivery lag. Published on rx_backlog_bytes.
+        self.declare_parameter('rx_backlog_warn_bytes', 1048576)  # 1 MB
+        # The Ping3DSS message can also carry the port/starboard bathymetry as
+        # nested PointCloud2s, but that is redundant with the sonar/bathymetry
+        # topic and rebuilding it every ping is a big per-ping cost that makes
+        # the reader fall behind (latency creep). Off by default; the sidescan
+        # viewer (the only sonar/ping consumer) does not need it.
+        self.declare_parameter('include_bathymetry_in_ping', False)
         
         # Get parameters
         self.sonar_host = self.get_parameter('sonar_host').value
@@ -89,7 +114,12 @@ class TdssDxDriver(Node):
             self.get_parameter('publish_navsatfix').value)
         self.navsatfix_topic = self.get_parameter('navsatfix_topic').value
         self.use_sonar_time = bool(self.get_parameter('use_sonar_time').value)
-        self._sonar_time_warned = False
+        self.sonar_time_max_skew = float(
+            self.get_parameter('sonar_time_max_skew').value)
+        self.rx_backlog_warn_bytes = int(
+            self.get_parameter('rx_backlog_warn_bytes').value)
+        self.include_bathymetry_in_ping = bool(
+            self.get_parameter('include_bathymetry_in_ping').value)
         
         # Setup logging
         logging.basicConfig(level=logging.INFO)
@@ -152,6 +182,27 @@ class TdssDxDriver(Node):
             'sonar/status',
             10
         )
+
+        # Sonar delivery latency (seconds): node_clock_now - embedded
+        # acquisition time. Cheap Float32 for the GUI's timing readout so the
+        # user can see how far the sonar stream lags real time (the ~30-45s
+        # control-PC buffering seen in the field). No SBG dependency here; the
+        # GUI derives the true sonar-vs-SBG skew from the two embedded stamps.
+        self.latency_pub = self.create_publisher(
+            Float32,
+            'sonar/delivery_latency',
+            10
+        )
+
+        # RX backlog (bytes queued in the kernel socket buffer + our userspace
+        # buffer). A growing value means the driver is not draining the TCP
+        # stream fast enough (falling behind locally). Sampled by a timer.
+        self.backlog_pub = self.create_publisher(
+            Int32,
+            'sonar/rx_backlog_bytes',
+            10
+        )
+        self._last_resync = 0
         
         # TF broadcaster
         self.tf_broadcaster = TransformBroadcaster(self)
@@ -207,6 +258,11 @@ class TdssDxDriver(Node):
         self._reader_thread = threading.Thread(
             target=self._reader_loop, name='tdss_reader', daemon=True)
         self._reader_thread.start()
+
+        # Backlog watchdog: sample the RX backlog + resync counter at 2 Hz and
+        # report them to ROS (topic + throttled warnings) so a driver that is
+        # falling behind is visible without attaching a profiler.
+        self.backlog_timer = self.create_timer(0.5, self._report_backlog)
         
         self.logger.info(f"3DSS-DX Driver initialized")
         self.logger.info(f"  Target: {self.sonar_host}:{self.sonar_port}")
@@ -358,39 +414,94 @@ class TdssDxDriver(Node):
                            f"{data.port_bathy_count + data.stbd_bathy_count} bathy points)")
     
     def create_timestamp(self, data: DxData) -> Time:
-        """Timestamp a ping with its acquisition time when trustworthy.
+        """Timestamp a ping with its embedded acquisition time.
 
         The 3DSS embeds a GNSS-disciplined absolute timestamp per ping
-        (``data.time`` = seconds + nanoseconds since epoch). Using it keeps
-        sonar data aligned to the real-time SBG pose tree even if the TCP
-        stream is delivered with latency, which is what prevents the cloud from
-        smearing on turns/return passes.
-
-        Guarded: if the sonar time is missing or differs from the system clock
-        by more than a few minutes (e.g. host not NTP/GNSS synced, or a
-        different epoch), we fall back to arrival time and warn once so a bad
-        clock can never push timestamps wildly off.
+        (``data.time`` = seconds + nanoseconds since epoch). We ALWAYS use it
+        (when ``use_sonar_time`` and the ping carries a time), because it keeps
+        sonar data aligned to the real-time SBG pose tree even when the TCP
+        stream is delivered with latency - which is what prevents the cloud from
+        smearing on turns/return passes. We never fall back to arrival time on a
+        large skew (that would defeat the purpose); instead we keep emitting a
+        throttled warning so a genuinely bad host clock stays visible. Wall time
+        is used only if the ping has no embedded time at all.
         """
         now = self.get_clock().now()
-        if self.use_sonar_time and data.time.seconds > 0:
+        if data.time.seconds > 0:
             # Match the node clock's type, otherwise the subtraction below
             # raises "Can't subtract times with different clock types".
             acq = Time(seconds=int(data.time.seconds),
                        nanoseconds=int(data.time.nanoseconds),
                        clock_type=now.clock_type)
-            # Acquisition should be at or slightly before "now" (delivery
-            # latency). Accept a small clock skew ahead and up to 5 min behind.
+            # Delivery latency = how far the sonar's embedded acquisition time
+            # trails the node clock. Publish it every ping for the GUI readout.
+            # On a GNSS/NTP-synced host this is the sonar-vs-real-time (hence
+            # sonar-vs-SBG) lag; in pcap replay the node clock is wall-now while
+            # data.time is the capture time, so there the GUI's SBG-vs-sonar
+            # skew (from the two embedded stamps) is the meaningful figure.
             delta = (now - acq).nanoseconds * 1e-9
-            if -5.0 <= delta <= 300.0:
+            self._publish_latency(delta)
+            if self.use_sonar_time:
+                # ALWAYS trust the sonar's embedded acquisition time - never
+                # fall back to arrival time, which would re-smear the
+                # georeferenced cloud on turns. If the stamp looks implausibly
+                # far from the node clock, keep warning (throttled) so a genuine
+                # clock problem is visible, but still use the embedded time.
+                if not (-5.0 <= delta <= self.sonar_time_max_skew):
+                    self.logger.warning(
+                        f"Sonar stream is {delta:.1f}s behind the node clock "
+                        "(still using the embedded sonar time). Likely the "
+                        "3DSS control PC is buffering/backlogged, or the host "
+                        "clock is not GNSS/NTP synced.",
+                        throttle_duration_sec=5.0)
                 return acq
-            if not self._sonar_time_warned:
-                self._sonar_time_warned = True
-                self.logger.warning(
-                    f"Sonar acquisition time is {delta:.1f}s from the system "
-                    "clock; using arrival time instead. Check that the host "
-                    "clock is NTP/GNSS synced to trust sonar timestamps.")
         return now
+
+    def _publish_latency(self, seconds: float):
+        """Publish the sonar delivery latency (seconds) for the GUI readout."""
+        msg = Float32()
+        msg.data = float(seconds)
+        self.latency_pub.publish(msg)
+
+    def _report_backlog(self):
+        """Publish + warn on RX backlog and stream resyncs (timer, 2 Hz).
+
+        Backlog = bytes queued in the kernel socket buffer plus our userspace
+        receive buffer. Healthy: near zero (the reader drains at line rate). A
+        sustained/growing value means the driver is CPU-bound and falling behind
+        - distinct from upstream control-PC delivery lag, which shows as a large
+        delivery latency with this backlog near zero.
+        """
+        client = self.tcp_client
+        if client is None or not self.connected:
+            return
+        backlog = client.pending_bytes()
+        msg = Int32()
+        msg.data = int(backlog)
+        self.backlog_pub.publish(msg)
+        if backlog > self.rx_backlog_warn_bytes:
+            self.logger.warning(
+                f"Sonar RX backlog {backlog / 1e6:.1f} MB: the driver is not "
+                "draining the TCP stream fast enough (falling behind locally).",
+                throttle_duration_sec=5.0)
+        # Surface any new stream desyncs (corrupt/misaligned framing, or a
+        # reconnect mid-frame). On a healthy live link this stays at zero.
+        if client.resync_count > self._last_resync:
+            self.logger.warning(
+                f"Sonar stream resynced (total {client.resync_count}, "
+                f"{client.bytes_discarded} bytes discarded) - lost framing.",
+                throttle_duration_sec=5.0)
+            self._last_resync = client.resync_count
     
+    @staticmethod
+    def _f32_array(samples) -> array:
+        """Pack a numpy sample vector into a float32 array.array (one memcpy)."""
+        out = array('f')
+        if samples is not None and len(samples) > 0:
+            out.frombytes(
+                np.ascontiguousarray(samples, dtype=np.float32).tobytes())
+        return out
+
     def publish_full_ping(self, data: DxData, timestamp: Time):
         """Publish complete Ping3DSS message with all metadata."""
         try:
@@ -428,28 +539,32 @@ class TdssDxDriver(Node):
             msg.starboard_sidescan_range_resolution = float(data.system_info.starboard_sidescan_range_resolution)
             msg.starboard_sidescan3d_range_resolution = float(data.system_info.starboard_sidescan3d_range_resolution)
             
-            # Bathymetry point clouds
-            port_points = data.get_port_bathymetry()
-            stbd_points = data.get_stbd_bathymetry()
-            
-            if len(port_points) > 0:
-                port_xyz = np.array([p.to_xyz() for p in port_points], dtype=np.float32)
-                port_amplitudes = np.array([p.amplitude for p in port_points], dtype=np.float32).reshape(-1, 1)
-                port_data = np.column_stack([port_xyz, port_amplitudes])
-                msg.port_bathymetry = self.create_pointcloud2(port_data, timestamp)
-            
-            if len(stbd_points) > 0:
-                stbd_xyz = np.array([p.to_xyz() for p in stbd_points], dtype=np.float32)
-                stbd_amplitudes = np.array([p.amplitude for p in stbd_points], dtype=np.float32).reshape(-1, 1)
-                stbd_data = np.column_stack([stbd_xyz, stbd_amplitudes])
-                msg.starboard_bathymetry = self.create_pointcloud2(stbd_data, timestamp)
-            
+            # Bathymetry point clouds (optional; redundant with the
+            # sonar/bathymetry topic and costly to rebuild every ping, so off
+            # by default -- see include_bathymetry_in_ping).
+            if self.include_bathymetry_in_ping:
+                port_points = data.get_port_bathymetry()
+                stbd_points = data.get_stbd_bathymetry()
+
+                if len(port_points) > 0:
+                    port_xyz = np.array([p.to_xyz() for p in port_points], dtype=np.float32)
+                    port_amplitudes = np.array([p.amplitude for p in port_points], dtype=np.float32).reshape(-1, 1)
+                    port_data = np.column_stack([port_xyz, port_amplitudes])
+                    msg.port_bathymetry = self.create_pointcloud2(port_data, timestamp)
+
+                if len(stbd_points) > 0:
+                    stbd_xyz = np.array([p.to_xyz() for p in stbd_points], dtype=np.float32)
+                    stbd_amplitudes = np.array([p.amplitude for p in stbd_points], dtype=np.float32).reshape(-1, 1)
+                    stbd_data = np.column_stack([stbd_xyz, stbd_amplitudes])
+                    msg.starboard_bathymetry = self.create_pointcloud2(stbd_data, timestamp)
+
             # Sidescan amplitudes: keep the raw float32 envelope magnitude.
             # (Casting to uint16 wraps the >1e6 values mod-65536 into noise.)
-            port_sidescan = data.get_port_sidescan()
-            stbd_sidescan = data.get_stbd_sidescan()
-            msg.port_sidescan_samples = port_sidescan.astype(np.float32).tolist() if len(port_sidescan) > 0 else []
-            msg.starboard_sidescan_samples = stbd_sidescan.astype(np.float32).tolist() if len(stbd_sidescan) > 0 else []
+            # Fill the float32[] via array.frombytes (one memcpy) instead of
+            # .tolist(), which builds thousands of Python float objects/ping.
+            msg.port_sidescan_samples = self._f32_array(data.get_port_sidescan())
+            msg.starboard_sidescan_samples = self._f32_array(
+                data.get_stbd_sidescan())
             
             # ASCII data
             msg.ascii_data = data.get_ascii_data()
@@ -469,24 +584,13 @@ class TdssDxDriver(Node):
     def publish_bathymetry(self, data: DxData, timestamp: Time):
         """Publish bathymetry point cloud in sonar frame."""
         try:
-            # Get XYZ coordinates in sonar frame
-            points_sonar = data.get_all_bathymetry_xyz(self.transducer_tilt_deg)
-            
-            if len(points_sonar) == 0:
+            # xyz + intensity in one masked array, so a corrupt point drops
+            # only that point (not the whole ping via a length mismatch).
+            points = data.get_all_bathymetry_xyzi(self.transducer_tilt_deg)
+
+            if len(points) == 0:
                 return
-            
-            # Get amplitude values
-            port_points = data.get_port_bathymetry()
-            stbd_points = data.get_stbd_bathymetry()
-            amplitudes = np.array([p.amplitude for p in port_points + stbd_points], 
-                                 dtype=np.float32)
-            
-            # Replace NaN/inf amplitudes with 0.0
-            amplitudes = np.nan_to_num(amplitudes, nan=0.0, posinf=0.0, neginf=0.0)
-            
-            # Combine xyz + intensity
-            points = np.column_stack([points_sonar, amplitudes])
-            
+
             # Create PointCloud2 in sonar frame
             cloud_msg = self.create_pointcloud2(points, timestamp, frame_id=self.frame_id)
             self.pointcloud_pub.publish(cloud_msg)

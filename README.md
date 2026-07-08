@@ -202,11 +202,11 @@ colcon test-result --verbose
 # Sonar reachable? (3DSS-DX Control data stream, TCP 23848; the head is .1,
 # the Windows PC running 3DSS-DX Control is .50 -- see docs/ARCHITECTURE.md)
 nc -zv <sonar_host> 23848
-ros2 param get /tdss_driver sonar_host
+ros2 param get /pingdsp/tdss_driver sonar_host
 
-# Data flowing?
-ros2 topic hz /sonar/ping
-ros2 topic echo /sonar/status std_msgs/msg/String --field data
+# Data flowing? (the sonar stack runs under the /pingdsp namespace)
+ros2 topic hz /pingdsp/sonar/ping
+ros2 topic echo /pingdsp/sonar/status std_msgs/msg/String --field data
 
 # SBG present in a capture? (sbgECom UDP, port 24333)
 tshark -r network_dump/capture.pcap -Y "udp.port == 24333" | head

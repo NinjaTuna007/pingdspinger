@@ -1,4 +1,6 @@
-pointcloud_filter:
+# '/**' matches the node under any namespace (the stack runs under /pingdsp).
+# A bare 'pointcloud_filter:' key only matches '/pointcloud_filter' and is ignored.
+/**:
   ros__parameters:
     # Enable/disable all filtering (bypass mode)
     enable_filtering: true
