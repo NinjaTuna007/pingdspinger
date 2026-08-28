@@ -1,5 +1,6 @@
-# local/ holds KTH-specific (procurement, quotes, private drive data) and
-# otherwise-irrelevant material (presentations, dumps). Never commit it.
+# local/ holds KTH-specific (procurement, quotes, private drive data),
+# site-specific RE notes (e.g. local/re/orebro-sonar-head/), backlog design
+# docs (local/design/), presentations, and dumps. Never commit it.
 local/
 
 # vendor/ IS tracked: it holds vendor technical docs (vendor/docs/) and the
