@@ -1774,9 +1774,12 @@ class SonarControlGUI:
                    command=self.ss_preset_delete).pack(side="left", padx=2)
         self._ss_refresh_preset_list()
         
-        add_slider("Pings (rows)", self.ss_num_var, 64, 4096, 64,
+        # Width max covers full dual-side raw resolution (~2×3840 ≈ 7680;
+        # headroom to 8192 for ~3870/side). Step 64 so exact full-res
+        # widths (e.g. 7680) are reachable on the slider.
+        add_slider("Pings (rows)", self.ss_num_var, 64, 8192, 64,
                    self._ss_set_num)
-        add_slider("Width (px)", self.ss_width_var, 128, 4096, 128,
+        add_slider("Width (px)", self.ss_width_var, 128, 8192, 64,
                    self._ss_set_width)
         add_slider("Log min", self.ss_logmin_var, 6.0, 18.0, 0.1)
         add_slider("Log max", self.ss_logmax_var, 6.0, 20.0, 0.1)
