@@ -10,6 +10,7 @@ CLEANED = os.path.join(POINTCLOUDS, "cleaned")
 GEOTIFF = os.path.join(POINTCLOUDS, "geotiff")
 
 COMBINED_CLEAN = os.path.join(CLEANED, "combined_clean.xyz")
+COMBINED_RAW = os.path.join(CLEANED, "combined_raw.xyz")
 COMBINED_CUBE_05M = os.path.join(CLEANED, "combined_cube_05m.xyz")
 OBJECT_CANDIDATES = os.path.join(CLEANED, "object_candidates.xyz")
 DEPTH_CUBE_05M_TIF = os.path.join(GEOTIFF, "depth_cube_05m.tif")

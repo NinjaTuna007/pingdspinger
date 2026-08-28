@@ -187,6 +187,40 @@ def clean_file(path: str, verbose: bool = True) -> np.ndarray:
     return clean_points(load_xyz(path), verbose=verbose, label=os.path.basename(path))
 
 
+def combine_raw(
+    filenames: list[str],
+    out_path: str,
+    raw_dir: str = RAW,
+    verbose: bool = True,
+) -> np.ndarray:
+    """Stack raw surveys with no cleaning."""
+    all_pts = []
+    for name in filenames:
+        path = os.path.join(raw_dir, name)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(path)
+        pts = load_xyz(path)
+        if verbose:
+            print(f"  {name}: {len(pts):,} points")
+        all_pts.append(pts)
+    combined = np.vstack(all_pts)
+    if verbose:
+        print(f"Combined total: {len(combined):,} points (no cleaning)")
+    write_xyz(
+        out_path,
+        combined,
+        [
+            "# PingDSP bathymetry point cloud (combined, raw)",
+            "# frame: UTM zone 33N (EPSG:32633); load in CloudCompare and accept the global shift",
+            "# source files: see DEFAULT_RAW_FILES in scripts/pointcloud/paths.py",
+            "# columns: easting northing z intensity",
+        ],
+    )
+    if verbose:
+        print("Wrote", out_path)
+    return combined
+
+
 def combine_and_clean(
     filenames: list[str],
     out_path: str,
