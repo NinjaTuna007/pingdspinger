@@ -3,13 +3,13 @@
     "3D!2wbfn6p": {
       "cameraState": {
         "perspective": true,
-        "distance": 84.09478170831474,
-        "phi": 56.67475613165985,
-        "thetaOffset": 6.281603936110267,
+        "distance": 191.0694981649355,
+        "phi": 4.972031323253131,
+        "thetaOffset": 82.67632817092073,
         "targetOffset": [
-          18.971033691454927,
-          11.627619480520888,
-          10.070678584958523
+          19.11737861100212,
+          19.59388778849761,
+          10.070678584958511
         ],
         "target": [
           0,
@@ -27,7 +27,7 @@
         "far": 5000
       },
       "followMode": "follow-pose",
-      "followTf": "pingdsp/odom",
+      "followTf": "pingdsp/base_link",
       "fixedFrame": "utm",
       "scene": {
         "transforms": {
@@ -71,6 +71,15 @@
         },
         "/vehicle/position": {
           "visible": false
+        },
+        "/pingdsp/sonar/bathymetry_filtered": {
+          "visible": true,
+          "colorField": "z",
+          "colorMode": "colormap",
+          "colorMap": "turbo",
+          "decayTime": 9999,
+          "maxValue": 0,
+          "minValue": -30
         }
       },
       "layers": {
@@ -181,7 +190,7 @@
       },
       "synchronize": false,
       "imageMode": {
-        "imageTopic": "/sonar/sidescan_image"
+        "imageTopic": "/pingdsp/sonar/sidescan_image"
       }
     },
     "TransformTree!irjx4z": {}
