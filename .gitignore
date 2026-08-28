@@ -24,5 +24,16 @@ gui/sidescan/saved/
 **/__pycache__/
 
 
-# vscode workspace files
+# vscode / IDE (machine-local paths)
+.vscode/
 *.code-workspace
+
+# Ultracode / fleet agent runs (scratch pcaps, manifests, ephemeral reports)
+.fleet/
+
+# Sidescan export viewer one-time mmap caches (beside *_sidescan.npz on disk)
+*_sidescan.log.npy
+*_sidescan.meta.npz
+
+# Zip build temp from scripts/pack_sidescan_share.py
+*.zip.partial
