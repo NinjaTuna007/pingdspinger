@@ -49,7 +49,8 @@ SESSION="${SESSION:-pingdsp}"     # tmux session name
 
 # --- Live hardware (MODE=real) ---------------------------------------------
 SONAR_HOST="${SONAR_HOST:-}"      # sonar TCP host; empty = 3dss.launch default (192.168.228.50)
-ENABLE_BAG="${ENABLE_BAG:-false}" # record a full `ros2 bag record -a` into <ws>/bags
+ENABLE_BAG="${ENABLE_BAG:-false}" # record a full `ros2 bag record -a` into <repo>/bags
+BAG_SPLIT_SEC="${BAG_SPLIT_SEC:-300}"  # split the recording every N seconds (ros2 bag record -d)
 
 # --- Replay (MODE=sim) -----------------------------------------------------
 SIM_PCAP="${SIM_PCAP:-$PKG_DIR/network_dump/live_sensor.pcap}"  # capture to replay
@@ -73,6 +74,9 @@ ENABLE_RECORDER="${ENABLE_RECORDER:-true}"   # stream cloud -> UTM .xyz (CloudCo
 RECORD_SOURCE="${RECORD_SOURCE:-filtered}"   # which cloud the recorder saves: filtered (live-filtered, clean) |
                                              #   raw (pristine but noisier, clean offline). Filter always runs.
 REQUIRE_NAV_FIX="${REQUIRE_NAV_FIX:-auto}"   # true | false | auto (auto: false in sim, true in real)
+# Odom/TF vertical: true (default) → local ENU z = EKF alt − datum alt.
+# Set false to freeze z at 0 (2.5D) when vertical GNSS is untrusted.
+USE_ALTITUDE="${USE_ALTITUDE:-true}"
 ROS_SETUP="${ROS_SETUP:-}"                   # extra setup.bash to source (optional)
 
 # ============================================================================
@@ -172,7 +176,7 @@ if [[ "$REQUIRE_NAV_FIX" == "auto" ]]; then
         REQUIRE_NAV_FIX="true"
     fi
 fi
-SBG_CMD="ros2 launch pingdsp_sbg sbg.launch require_nav_solution:=$REQUIRE_NAV_FIX"
+SBG_CMD="ros2 launch pingdsp_sbg sbg.launch require_nav_solution:=$REQUIRE_NAV_FIX use_altitude:=$USE_ALTITUDE"
 
 # --- Window 1 (sonar) commands, per MODE ---
 REPLAY_CMD=""
@@ -182,7 +186,7 @@ if [[ "$MODE" == "real" ]]; then
     if [[ -n "$SONAR_HOST" ]]; then
         SONAR_ARGS="sonar_host:=$SONAR_HOST"
     fi
-    SONAR_CMD="ros2 launch pingdsp_driver 3dss.launch enable_control:=true record_bag:=$ENABLE_BAG $RECORDER_ARGS $SONAR_TF_ARGS $SONAR_ARGS"
+    SONAR_CMD="ros2 launch pingdsp_driver 3dss.launch enable_control:=true record_bag:=$ENABLE_BAG bag_split_duration:=$BAG_SPLIT_SEC $RECORDER_ARGS $SONAR_TF_ARGS $SONAR_ARGS"
     SONAR_STATUS_CMD="sleep 3; ros2 topic echo /pingdsp/sonar/status std_msgs/msg/String --field data"
 else
     # Sim: run the REAL driver against a local TCP server fed from the pcap.
@@ -193,7 +197,7 @@ else
     # time - correct, but far from wall-now - so widen the skew guard to keep
     # using it. Combined with SBG time_reference:=ins_unix (both on GNSS/UNIX
     # time), the cloud stays registered independent of per-path latency.
-    SONAR_CMD="sleep 4; ros2 launch pingdsp_driver 3dss.launch enable_control:=false sonar_host:=127.0.0.1 sonar_port:=$SIM_TCP_PORT sonar_time_max_skew:=1000000000000.0 $RECORDER_ARGS $SONAR_TF_ARGS"
+    SONAR_CMD="sleep 4; ros2 launch pingdsp_driver 3dss.launch enable_control:=false sonar_host:=127.0.0.1 sonar_port:=$SIM_TCP_PORT sonar_time_max_skew:=1000000000000.0 record_bag:=$ENABLE_BAG bag_split_duration:=$BAG_SPLIT_SEC $RECORDER_ARGS $SONAR_TF_ARGS"
     # Second pane: the unified replayer (sonar TCP + SBG UDP on one clock). It
     # binds the TCP server immediately, then waits for the driver to connect
     # before starting the shared clock (so sonar + SBG stay aligned).

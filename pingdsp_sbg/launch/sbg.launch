@@ -29,6 +29,9 @@
                       locking the odom datum. Set false for bench/replay captures
                       with no GPS fix (e.g. live_sensor.pcap) so the TF tree still
                       connects and heading/odom publish from attitude."/>
+    <arg name="use_altitude" default="true"
+         description="When true (default), odom/TF z = EKF altitude minus datum
+                      altitude. When false, freeze z at 0 (2.5D)."/>
     <arg name="publish_sonar_tf" default="true"
          description="Publish a static &lt;prefix&gt;/base_link -&gt; sonar mount transform so the sonar frame hangs off the SBG-driven vehicle frame"/>
     <arg name="sonar_frame" default="sonar"
@@ -60,6 +63,7 @@
         <node pkg="pingdsp_sbg" exec="sbg_to_odom"
               name="sbg_to_odom" output="screen">
             <param from="$(var odom_config)"/>
+            <param name="use_altitude" value="$(var use_altitude)"/>
         </node>
 
         <!-- Static vehicle -> sonar mount, so the sonar sensor frame attaches

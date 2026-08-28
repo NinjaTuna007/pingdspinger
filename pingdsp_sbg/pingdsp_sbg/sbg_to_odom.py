@@ -19,7 +19,9 @@ Pipeline:
   heading/course/speed/latlon topics.
 
 Unlike the evolo original we also populate pose/twist covariance from the SBG
-1-sigma accuracy fields.
+1-sigma accuracy fields. Vertical (``use_altitude``): default true uses local
+ENU ``z = altitude − datum_altitude``; set false to freeze odom/TF ``z`` at 0
+(2.5D) when vertical GNSS is untrusted.
 """
 
 from geographic_msgs.msg import GeoPoint
@@ -63,6 +65,9 @@ class SbgToOdom(Node):
         # Map panel (and other geo tools) can plot the rig on a real map.
         self.declare_parameter('publish_navsatfix', True)
         self.declare_parameter('navsatfix_topic', 'fix')
+        # When true (default), publish local ENU z = altitude - datum altitude.
+        # When false, freeze odom/TF z at 0 (2.5D) if vertical GNSS is untrusted.
+        self.declare_parameter('use_altitude', True)
         # Stamp odom/TF with the SBG message's embedded acquisition time rather
         # than wall-clock arrival time. With the sbg_driver set to
         # time_reference:=ins_unix this is the GNSS-referenced UNIX time, which
@@ -88,16 +93,18 @@ class SbgToOdom(Node):
         self.publish_navsat = bool(
             self.get_parameter('publish_navsatfix').value)
         navsatfix_topic = self.get_parameter('navsatfix_topic').value
+        self.use_altitude = bool(self.get_parameter('use_altitude').value)
         self.use_message_time = bool(
             self.get_parameter('use_message_time').value)
 
         self.odom_frame = '{}/odom'.format(prefix)
         self.base_frame = '{}/base_link'.format(prefix)
 
-        # Datum offset (UTM easting/northing of <prefix>/odom origin).
+        # Datum offset (UTM easting/northing + altitude of <prefix>/odom origin).
         self.utm_ready = False
         self.x_offset = 0.0
         self.y_offset = 0.0
+        self.z_offset = 0.0
 
         # Latest state.
         self.have_position = False
@@ -122,6 +129,7 @@ class SbgToOdom(Node):
         self._quat_priority_sec = 0.5
         self.x = 0.0
         self.y = 0.0
+        self.z = 0.0
         self.latitude = 0.0
         self.longitude = 0.0
         self.altitude = 0.0
@@ -167,10 +175,10 @@ class SbgToOdom(Node):
         self.timer = self.create_timer(period, self.publish)
 
         self.get_logger().info(
-            'sbg_to_odom: {} -> {} (attitude_source={}, waiting for '
-            'utm -> {} datum TF)'.format(
+            'sbg_to_odom: {} -> {} (attitude_source={}, use_altitude={}, '
+            'waiting for utm -> {} datum TF)'.format(
                 self.odom_frame, self.base_frame, self.attitude_source,
-                self.odom_frame))
+                self.use_altitude, self.odom_frame))
 
     def _ensure_utm_offset(self):
         """Look up the static ``utm -> <prefix>/odom`` datum offset once."""
@@ -183,10 +191,12 @@ class SbgToOdom(Node):
             return False
         self.x_offset = tf.transform.translation.x
         self.y_offset = tf.transform.translation.y
+        self.z_offset = tf.transform.translation.z
         self.utm_ready = True
         self.get_logger().info(
-            'Datum offset acquired: easting={:.2f} northing={:.2f}'.format(
-                self.x_offset, self.y_offset))
+            'Datum offset acquired: easting={:.2f} northing={:.2f} '
+            'alt={:.2f}'.format(
+                self.x_offset, self.y_offset, self.z_offset))
         return True
 
     def utc_callback(self, msg: SbgUtcTime):
@@ -227,6 +237,12 @@ class SbgToOdom(Node):
             msg.latitude, msg.longitude)
         self.x = easting - self.x_offset
         self.y = northing - self.y_offset
+        # Local Up relative to the locked datum altitude (ENU z). Frozen to 0
+        # unless use_altitude is set (intended for RTK vertical).
+        if self.use_altitude:
+            self.z = float(msg.altitude) - self.z_offset
+        else:
+            self.z = 0.0
 
         vel_ned = (msg.velocity.x, msg.velocity.y, msg.velocity.z)
         self.vx, self.vy, self.vz = st.sbg_velocity_to_body_enu(
@@ -365,7 +381,7 @@ class SbgToOdom(Node):
         odom.child_frame_id = self.base_frame
         odom.pose.pose.position.x = self.x
         odom.pose.pose.position.y = self.y
-        odom.pose.pose.position.z = 0.0
+        odom.pose.pose.position.z = self.z
         odom.pose.pose.orientation.x = qx
         odom.pose.pose.orientation.y = qy
         odom.pose.pose.orientation.z = qz
@@ -387,7 +403,7 @@ class SbgToOdom(Node):
             tf.child_frame_id = self.base_frame
             tf.transform.translation.x = self.x
             tf.transform.translation.y = self.y
-            tf.transform.translation.z = 0.0
+            tf.transform.translation.z = self.z
             tf.transform.rotation.x = qx
             tf.transform.rotation.y = qy
             tf.transform.rotation.z = qz
@@ -402,7 +418,7 @@ class SbgToOdom(Node):
         self.latlon_pub.publish(GeoPoint(
             latitude=float(self.latitude),
             longitude=float(self.longitude),
-            altitude=0.0))
+            altitude=float(self.altitude) if self.use_altitude else 0.0))
 
 
 def main(args=None):

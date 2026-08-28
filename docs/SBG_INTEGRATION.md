@@ -90,14 +90,17 @@ utm_{zone}_{band}  →  utm  →  pingdsp/odom
 ```
 
 `utm_{zone}_{band} → utm` is identity; `utm → pingdsp/odom` carries the UTM
-easting/northing of the datum. The transforms are re-sent on a timer so late
-subscribers and bag splits still receive them.
+easting/northing **and altitude** of the datum. The transforms are re-sent on a
+timer so late subscribers and bag splits still receive them.
 
 ### `sbg_to_odom`
 
-* Looks up `utm → pingdsp/odom` once to recover the datum offset.
-* Per `SbgEkfNav`: UTM-forwards lat/lon, subtracts the datum → local ENU position;
-  also rotates NED ground velocity into the FLU body frame.
+* Looks up `utm → pingdsp/odom` once to recover the datum offset (easting,
+  northing, and altitude).
+* Per `SbgEkfNav`: UTM-forwards lat/lon, subtracts the datum → local ENU `x`/`y`.
+  Vertical: with `use_altitude:=true` (default) sets
+  `z = altitude − datum_altitude`; with `use_altitude:=false` freezes `z` at 0
+  (2.5D). Also rotates NED ground velocity into the FLU body frame.
 * Attitude (`attitude_source`): from `SbgEkfQuat` when present, otherwise from
   `SbgEkfEuler` — both converted NED→ENU through the same math (Euler is first
   turned into the identical NED attitude quaternion). `auto` prefers a live quat
@@ -141,7 +144,10 @@ Sanity checks (also asserted in `test/test_sbg_transforms.py`):
 `frame_prefix` (default `pingdsp`), the input topics (`sbg/ekf_nav`,
 `sbg/ekf_quat`, `sbg/ekf_euler`, `sbg/imu_data`, `sbg/imu_short`),
 `attitude_source` (`auto`/`quat`/`euler`), `publish_rate`, `publish_tf`,
-`publish_covariance`, and the initializer's `require_nav_solution` / `update_rate`.
+`publish_covariance`, `use_altitude` (default `true` — local ENU `z` from EKF
+altitude; set `false` to freeze `z`), and the initializer's
+`require_nav_solution` / `update_rate`. Bringup passes
+`use_altitude:=$USE_ALTITUDE` (default true).
 
 Everything runs under the `pingdsp` namespace (set in `sbg.launch`), so the SBG
 driver publishes `/pingdsp/sbg/*` and odometry comes out on `/pingdsp/odom`. TF
