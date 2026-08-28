@@ -9,9 +9,10 @@ Mirrors evolo_common's ``sbg_to_odom_initializer``: it waits for the first
     utm_{zone}_{band}  ->  utm  ->  <frame_prefix>/odom
 
 `utm_{zone}_{band} -> utm` is identity; `utm -> <prefix>/odom` carries the UTM
-easting/northing of the datum. ``sbg_to_odom`` then looks up `utm -> odom` once
-to recover that offset. The static transforms are re-sent on a timer so late
-subscribers (and rosbag splits) still receive them.
+easting/northing **and altitude** of the datum. ``sbg_to_odom`` then looks up
+`utm -> odom` once to recover that offset (XY always; Z when
+``use_altitude`` is enabled). The static transforms are re-sent on a timer so
+late subscribers (and rosbag splits) still receive them.
 """
 
 from geometry_msgs.msg import TransformStamped
@@ -35,6 +36,9 @@ class SbgToOdomInitializer(Node):
         self.declare_parameter('update_rate', 1.0)
         self.declare_parameter('require_nav_solution', True)
         self.declare_parameter('verbose', True)
+        # Accepted so shared -p / launch overrides with sbg_to_odom do not
+        # fail this node; altitude is always stored in the datum TF.z.
+        self.declare_parameter('use_altitude', True)
 
         self.frame_prefix = self.get_parameter('frame_prefix').value
         nav_topic = self.get_parameter('sbg_nav_topic').value
@@ -87,7 +91,9 @@ class SbgToOdomInitializer(Node):
         utm_to_odom.child_frame_id = self.odom_frame
         utm_to_odom.transform.translation.x = easting
         utm_to_odom.transform.translation.y = northing
-        utm_to_odom.transform.translation.z = 0.0
+        # Datum altitude so sbg_to_odom can form local ENU z = alt - datum
+        # when use_altitude is enabled (ignored when Z is frozen at 0).
+        utm_to_odom.transform.translation.z = float(msg.altitude)
         utm_to_odom.transform.rotation.w = 1.0
 
         self.transforms = [zone_to_utm, utm_to_odom]
@@ -95,9 +101,9 @@ class SbgToOdomInitializer(Node):
         self.static_broadcaster.sendTransform(self.transforms)
 
         self.get_logger().info(
-            'Datum locked at lat={:.7f} lon={:.7f} -> {} '
+            'Datum locked at lat={:.7f} lon={:.7f} alt={:.2f} -> {} '
             'easting={:.2f} northing={:.2f}; broadcasting {} -> utm -> {}'.format(
-                msg.latitude, msg.longitude, utm_zone_frame,
+                msg.latitude, msg.longitude, msg.altitude, utm_zone_frame,
                 easting, northing, utm_zone_frame, self.odom_frame))
 
     def republish(self):

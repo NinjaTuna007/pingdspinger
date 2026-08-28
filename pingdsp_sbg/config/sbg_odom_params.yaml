@@ -43,3 +43,6 @@ sbg_to_odom:
     # so it publishes even before the local odom datum locks.
     publish_navsatfix: true
     navsatfix_topic: 'fix'
+    # Local ENU z from EKF altitude (relative to datum). true (default).
+    # Set false to freeze odom/TF z at 0 (2.5D) when vertical GNSS is untrusted.
+    use_altitude: true

@@ -115,13 +115,13 @@ class RosProbe:
             self._rclpy.shutdown()
 
 
-def make_nav(lat, lon, solution_mode=4):
+def make_nav(lat, lon, solution_mode=4, altitude=0.0):
     """Build an SbgEkfNav in NED with a given solution mode."""
     from sbg_driver.msg import SbgEkfNav
     msg = SbgEkfNav()
     msg.latitude = float(lat)
     msg.longitude = float(lon)
-    msg.altitude = 0.0
+    msg.altitude = float(altitude)
     msg.velocity.x = 0.0
     msg.velocity.y = 0.0
     msg.velocity.z = 0.0

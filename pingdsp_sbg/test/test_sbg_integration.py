@@ -46,9 +46,85 @@ def test_odom_published_from_ned_stream():
         # Datum is the first fix, so the local position starts near origin.
         assert abs(msg.pose.pose.position.x) < 5.0
         assert abs(msg.pose.pose.position.y) < 5.0
+        # Default altitude in make_nav is 0 → local z 0 even with use_altitude.
+        assert msg.pose.pose.position.z == pytest.approx(0.0, abs=1e-9)
         # Identity NED attitude -> ENU yaw ~ +90 deg (qz ~ qw ~ sqrt(0.5)).
         assert msg.pose.pose.orientation.w == pytest.approx(0.707, abs=0.05)
         assert msg.pose.pose.orientation.z == pytest.approx(0.707, abs=0.05)
+    finally:
+        stack.stop()
+
+
+def test_odom_z_tracks_altitude_by_default():
+    """Default use_altitude → local ENU z = alt − datum alt."""
+    from nav_msgs.msg import Odometry
+    from sbg_driver.msg import SbgEkfNav, SbgEkfQuat, SbgImuData
+
+    stack = SbgStack()
+    stack.start_nodes(params=['publish_rate:=20.0', 'update_rate:=10.0'])
+    probe = stack.start_probe()
+
+    odoms = probe.collect(Odometry, '/odom')
+    nav_pub = probe.publisher(SbgEkfNav, '/sbg/ekf_nav')
+    quat_pub = probe.publisher(SbgEkfQuat, '/sbg/ekf_quat')
+    imu_pub = probe.publisher(SbgImuData, '/sbg/imu_data')
+
+    try:
+        def _pump_datum():
+            nav_pub.publish(make_nav(LAT, LON, solution_mode=4, altitude=50.0))
+            quat_pub.publish(make_quat())
+            imu_pub.publish(make_imu(0.0, 0.0, 0.1))
+            return len(odoms) > 0
+
+        assert wait_until(_pump_datum, timeout=25), 'no Odometry with use_altitude'
+        assert odoms[-1].pose.pose.position.z == pytest.approx(0.0, abs=0.05)
+
+        def _pump_climb():
+            nav_pub.publish(make_nav(LAT, LON, solution_mode=4, altitude=53.5))
+            quat_pub.publish(make_quat())
+            imu_pub.publish(make_imu(0.0, 0.0, 0.1))
+            return abs(odoms[-1].pose.pose.position.z - 3.5) < 0.05
+
+        assert wait_until(_pump_climb, timeout=10), 'z did not track altitude delta'
+        assert odoms[-1].pose.pose.position.z == pytest.approx(3.5, abs=0.05)
+    finally:
+        stack.stop()
+
+
+def test_odom_z_frozen_when_use_altitude_false():
+    """use_altitude:=false keeps z at 0 even if EKF altitude moves."""
+    from nav_msgs.msg import Odometry
+    from sbg_driver.msg import SbgEkfNav, SbgEkfQuat, SbgImuData
+
+    stack = SbgStack()
+    stack.start_nodes(params=[
+        'publish_rate:=20.0', 'update_rate:=10.0', 'use_altitude:=false',
+    ])
+    probe = stack.start_probe()
+
+    odoms = probe.collect(Odometry, '/odom')
+    nav_pub = probe.publisher(SbgEkfNav, '/sbg/ekf_nav')
+    quat_pub = probe.publisher(SbgEkfQuat, '/sbg/ekf_quat')
+    imu_pub = probe.publisher(SbgImuData, '/sbg/imu_data')
+
+    try:
+        def _pump():
+            nav_pub.publish(make_nav(LAT, LON, solution_mode=4, altitude=56.0))
+            quat_pub.publish(make_quat())
+            imu_pub.publish(make_imu(0.0, 0.0, 0.1))
+            return len(odoms) > 0
+
+        assert wait_until(_pump, timeout=25), 'no Odometry with use_altitude false'
+        assert odoms[-1].pose.pose.position.z == pytest.approx(0.0, abs=1e-9)
+
+        def _pump_climb():
+            nav_pub.publish(make_nav(LAT, LON, solution_mode=4, altitude=60.0))
+            quat_pub.publish(make_quat())
+            imu_pub.publish(make_imu(0.0, 0.0, 0.1))
+            return len(odoms) > 1
+
+        assert wait_until(_pump_climb, timeout=10)
+        assert odoms[-1].pose.pose.position.z == pytest.approx(0.0, abs=1e-9)
     finally:
         stack.stop()
 

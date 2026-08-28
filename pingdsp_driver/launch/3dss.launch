@@ -23,6 +23,8 @@
          description="Enable sonar control interface"/>
     <arg name="record_bag" default="false" 
          description="Enable ROS 2 bag recording of all topics"/>
+    <arg name="bag_split_duration" default="300"
+         description="Split the recording into segments of at most this many seconds (ros2 bag record -d). Keeps individual .mcap files manageable on long surveys."/>
     <arg name="publish_tf" default="true"
          description="Let the sonar driver broadcast map-&gt;odom-&gt;sonar TF. Set false when the SBG stack owns the pose tree."/>
     <arg name="publish_odometry" default="true"
@@ -78,5 +80,5 @@
          ros2 bag starts, so the command self-creates it ($0 = the dir): no
          external mkdir needed. -->
     <executable if="$(var record_bag)" output="screen"
-                cmd="bash -c 'mkdir -p &quot;$0&quot; &amp;&amp; cd &quot;$0&quot; &amp;&amp; exec ros2 bag record -a' $(env PINGDSP_REPO $(find-pkg-share pingdsp_driver)/../../..)/bags"/>
+                cmd="bash -c 'mkdir -p &quot;$0&quot; &amp;&amp; cd &quot;$0&quot; &amp;&amp; exec ros2 bag record -a -d $1' $(env PINGDSP_REPO $(find-pkg-share pingdsp_driver)/../../..)/bags $(var bag_split_duration)"/>
 </launch>
