@@ -88,6 +88,19 @@ Parameters and defaults live in
 `pingdsp_driver/config/sidescan_viewer_params.yaml`; the node publishes
 `sonar/sidescan_image` (`bgr8`) at `publish_rate` Hz (`<= 0` disables).
 
+## 3. Offline export viewer (Örebro bags)
+
+Full-resolution waterfalls can be exported to `*_sidescan.npz` and opened
+without ROS:
+
+```bash
+python3 gui/sidescan_export_viewer.py
+# or the share pack: see docs/SIDESCAN_EXPORT_VIEWER.md
+```
+
+Same viz knobs as the live Sidescan tab. Rebuild the collaborator zip with
+`python3 scripts/pack_sidescan_share.py`.
+
 ## Tuning notes
 
 > The samples are the raw **float32** `SidescanPoint.amplitude` (envelope
