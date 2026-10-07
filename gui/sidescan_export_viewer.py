@@ -11,6 +11,7 @@ are extra and do not drop along-track coverage.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -44,13 +45,12 @@ def _first_existing(*candidates: Path) -> Path | None:
     return None
 
 
-# Prefer bundled share-zip layout, then in-repo defaults.
+# Prefer bundled share-zip layout, then $PINGDSP_SIDESCAN_DIR, then here.
 DEFAULT_DIR = _first_existing(
     _HERE / "data",
     _HERE.parent / "data",
-    Path(
-        "/path/to/datasets/orebro/sidescan_fullres"
-    ),
+    *([Path(os.environ["PINGDSP_SIDESCAN_DIR"])]
+      if os.environ.get("PINGDSP_SIDESCAN_DIR") else []),
 ) or _HERE
 
 _DEFAULT_JSON = _first_existing(
@@ -58,7 +58,7 @@ _DEFAULT_JSON = _first_existing(
     _HERE / "sidescan" / "config" / "sidescan_default.json",
 ) or (_HERE / "sidescan" / "config" / "sidescan_default.json")
 
-# Soft-cap only insane speed-comp expansions (Orebro max raw ~32k rows).
+# Soft-cap only insane speed-comp expansions (a long survey is ~32k raw rows).
 _MAX_COMPOSE_H = 100_000
 _ZOOM_MIN = 0.02
 _ZOOM_MAX = 32.0
