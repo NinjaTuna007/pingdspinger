@@ -121,14 +121,16 @@ def replay_server(packet_stream, listen_port, speed_multiplier=1.0):
                 if packet_count % 100 == 0:
                     elapsed = time.time() - start_time
                     rate = sent_bytes / elapsed / 1024 if elapsed > 0 else 0
-                    print(f"  Sent {packet_count} packets, {sent_bytes/1024:.1f} KB ({rate:.1f} KB/s) - {elapsed:.1f}s", end='\r')
+                    print(f"  Sent {packet_count} packets, {sent_bytes/1024:.1f} KB "
+                          f"({rate:.1f} KB/s) - {elapsed:.1f}s", end='\r')
             
             except (BrokenPipeError, ConnectionResetError) as e:
                 print(f"\n✗ Client disconnected after {sent_bytes} bytes: {e}")
                 break
         
         elapsed = time.time() - start_time
-        print(f"\n✓ Replay complete: {packet_count} packets, {sent_bytes/1024:.1f} KB in {elapsed:.1f}s")
+        print(f"\n✓ Replay complete: {packet_count} packets, "
+              f"{sent_bytes/1024:.1f} KB in {elapsed:.1f}s")
         
         # Keep connection open for client to finish processing
         time.sleep(2)

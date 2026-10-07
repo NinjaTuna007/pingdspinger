@@ -78,7 +78,8 @@ class SonarControlExample(Node):
         request.linear = linear
         request.logarithmic = logarithmic
         
-        self.get_logger().info(f"Setting {side} gain (C={constant}, L={linear}, Log={logarithmic})...")
+        self.get_logger().info(
+            f"Setting {side} gain (C={constant}, L={linear}, Log={logarithmic})...")
         future = self.gain_client.call_async(request)
         rclpy.spin_until_future_complete(self, future)
         

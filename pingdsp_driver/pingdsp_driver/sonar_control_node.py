@@ -163,7 +163,8 @@ class SonarControlNode(Node):
     def connect_to_sonar(self) -> bool:
         """Connect to sonar control interface."""
         try:
-            self.logger.info(f"Connecting to control interface at {self.sonar_host}:{self.control_port}")
+            self.logger.info(
+                f"Connecting to control interface at {self.sonar_host}:{self.control_port}")
             self.control_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.control_socket.settimeout(self.timeout)
             self.control_socket.connect((self.sonar_host, self.control_port))
@@ -460,7 +461,8 @@ class SonarControlNode(Node):
             cmd = "app"
         else:
             response.success = False
-            response.message = f"Unknown command: {command}. Use 'init', 'mode', 'exit', or 'status'"
+            response.message = (f"Unknown command: {command}. "
+                                "Use 'init', 'mode', 'exit', or 'status'")
             return response
         
         self.logger.info(f"App control: {cmd}")
@@ -885,7 +887,8 @@ class SonarControlNode(Node):
             cmd = f"file --speed={request.speed}"
         else:
             response.success = False
-            response.message = f"Unknown command: {command}. Use: open, close, play, stop, status, speed"
+            response.message = (f"Unknown command: {command}. "
+                                "Use: open, close, play, stop, status, speed")
             return response
         
         self.logger.info(f"File control: {cmd}")
