@@ -131,6 +131,27 @@ def integrate_along_track(stamps: np.ndarray, speeds: np.ndarray) -> np.ndarray:
     return out
 
 
+# Across-track metres per bin = sound_velocity_bulk / (2 * sample_rate).
+# 1485 m/s, 56.25 kHz -> 0.0132 m. The head's `*_sidescan_range_resolution`
+# (0.0165) is the pulse range resolution, NOT the bin spacing.
+DEFAULT_BIN_M = 0.0132
+
+
+def _range_res_from_npz(z) -> float:
+    """Bin spacing for an export; prefers c/(2fs) over any stored value."""
+    files = set(z.files)
+    if "sample_rate_hz" in files and "sound_velocity_m_s" in files:
+        fs = float(z["sample_rate_hz"])
+        c = float(z["sound_velocity_m_s"])
+        if fs > 0.0 and c > 0.0:
+            return c / (2.0 * fs)
+    if "range_res_m" in files:
+        v = float(z["range_res_m"])
+        if v > 0.0:
+            return v
+    return DEFAULT_BIN_M
+
+
 def load_export(path: Path, progress=None) -> dict:
     path = Path(path)
     log_path = path.with_name(path.stem + ".log.npy")
@@ -140,7 +161,13 @@ def load_export(path: Path, progress=None) -> dict:
         if progress:
             progress(msg)
 
-    if log_path.is_file() and meta_path.is_file():
+    cache_ok = log_path.is_file() and meta_path.is_file()
+    if cache_ok:
+        # Cache written before the npz was regenerated is stale.
+        npz_mtime = path.stat().st_mtime
+        cache_ok = (log_path.stat().st_mtime >= npz_mtime
+                    and meta_path.stat().st_mtime >= npz_mtime)
+    if cache_ok:
         prog("mmap cache…")
         meta = np.load(meta_path)
         log = np.load(log_path, mmap_mode="r")
@@ -156,7 +183,7 @@ def load_export(path: Path, progress=None) -> dict:
     with np.load(path) as z:
         log16 = np.asarray(z["log"], dtype=np.float16)
         along = np.asarray(z["along_m"], dtype=np.float64)
-        range_res = float(z["range_res_m"]) if "range_res_m" in z.files else 0.0165
+        range_res = _range_res_from_npz(z)
     prog(f"writing cache {log_path.name}…")
     np.save(log_path, log16)
     np.savez(meta_path, along_m=along, range_res_m=np.float64(range_res))
@@ -209,7 +236,7 @@ class ExportViewer(tk.Tk):
         self.log_raw = None          # float16 mmap
         self.log_f32 = None          # optional contiguous f32 for fast toggles
         self.along_m = None
-        self.range_res = 0.0165
+        self.range_res = DEFAULT_BIN_M
         self._path: Path | None = None
 
         self._bgr = None
