@@ -9,6 +9,7 @@ Based on: 3DSS-DX Structure API v0.6 (2016-11-09)
 Author: PingDSP Inc.
 """
 
+import math
 import struct
 import numpy as np
 from dataclasses import dataclass
@@ -258,11 +259,13 @@ class DxParameters:
         offset += SidescanSettings.SIZE
         
         # Port Sidescan3DSettings (16 bytes)
-        port_sidescan3d = Sidescan3DSettings.from_bytes(data[offset:offset+Sidescan3DSettings.SIZE])
+        port_sidescan3d = Sidescan3DSettings.from_bytes(
+            data[offset:offset+Sidescan3DSettings.SIZE])
         offset += Sidescan3DSettings.SIZE
         
         # Starboard Sidescan3DSettings (16 bytes)
-        starboard_sidescan3d = Sidescan3DSettings.from_bytes(data[offset:offset+Sidescan3DSettings.SIZE])
+        starboard_sidescan3d = Sidescan3DSettings.from_bytes(
+            data[offset:offset+Sidescan3DSettings.SIZE])
         offset += Sidescan3DSettings.SIZE
         
         # Port TransmitSettings (72 bytes)
@@ -365,7 +368,8 @@ class BathymetryPoint:
             reserved2=values[4]
         )
     
-    def to_xyz(self, is_port: bool = True, transducer_tilt_deg: float = 30.0) -> Tuple[float, float, float]:
+    def to_xyz(self, is_port: bool = True,
+               transducer_tilt_deg: float = 30.0) -> Tuple[float, float, float]:
         """
         Convert range/angle to XYZ coordinates in sonar frame.
         
@@ -416,24 +420,58 @@ class BathymetryPoint:
 @dataclass
 class SidescanPoint3D:
     """
-    12-byte 3D sidescan point structure.
-    
-    Each point contains XYZ position relative to the sensor.
+    16-byte sidescan-3D point (vendor ``common::Sidescan3DPoint``).
+
+    Polar like BathymetryPoint: range + angle from the transducer MRA
+    (negative = downward) + amplitude. The fourth float is documented as
+    "reserved for SNR or quality"; on real data it tracks 20*log10(amplitude)
+    with a 5-95 % spread of 14-54 dB, i.e. it is the per-point SNR in dB.
+
+    These are the raw CAATI angle solutions for every range step (several per
+    range, water column included). The BathymetryPoint section is the
+    bottom-tracked, binned subset of these.
     """
-    x: float  # Across-track position (meters)
-    y: float  # Along-track position (meters)
-    z: float  # Depth (meters, negative down)
-    
-    SIZE = 12  # 3 floats × 4 bytes
-    
+    range_m: float     # meters
+    angle_rad: float   # radians, negative = downward from MRA
+    amplitude: float   # after gain + 3D processing
+    snr_db: float      # vendor "reserved"; SNR in dB on real data
+
+    SIZE = 16  # 4 floats × 4 bytes
+
     @classmethod
     def from_bytes(cls, data: bytes) -> 'SidescanPoint3D':
-        """Parse SidescanPoint3D from 12-byte buffer."""
+        """Parse SidescanPoint3D from 16-byte buffer."""
         if len(data) < cls.SIZE:
             raise ValueError(f"Buffer too small: expected {cls.SIZE}, got {len(data)}")
-        
-        x, y, z = struct.unpack('<3f', data[:cls.SIZE])
-        return cls(x=x, y=y, z=z)
+
+        r, a, amp, snr = struct.unpack('<4f', data[:cls.SIZE])
+        return cls(range_m=r, angle_rad=a, amplitude=amp, snr_db=snr)
+
+
+def polar_to_sonar_xyz(ranges: np.ndarray, angles: np.ndarray, n_port: int,
+                       tilt_port_deg: float, tilt_stbd_deg: float) -> np.ndarray:
+    """Range/angle (port rows first, then starboard) -> Nx3 sonar-frame xyz.
+
+    Same geometry as BathymetryPoint.to_xyz: total angle = mounting tilt +
+    beam angle; x (along-track) = 0; port +y, starboard -y; z = depth
+    (negative down).
+    """
+    n = ranges.shape[0]
+    tilt = np.empty(n, dtype=np.float32)
+    tilt[:n_port] = np.radians(tilt_port_deg)
+    tilt[n_port:] = np.radians(tilt_stbd_deg)
+    total = tilt + angles
+    horizontal = ranges * np.cos(total)
+    xyz = np.zeros((n, 3), dtype=np.float32)
+    xyz[:n_port, 1] = horizontal[:n_port]
+    xyz[n_port:, 1] = -horizontal[n_port:]
+    xyz[:, 2] = ranges * np.sin(total)
+    return xyz
+
+
+# Hard physical sanity bound on ranges in any point section; corrupt frames
+# can carry ~1e19. Not the user-tunable operating range (pointcloud_filter).
+SANE_MAX_RANGE_M = 5000.0
 
 
 @dataclass
@@ -619,34 +657,165 @@ class DxData:
         
         return points
     
+    def _sidescan_points(self, offset: int, count: int) -> np.ndarray:
+        """Return a (count, 2) float32 view of SidescanPoint structs: [range_m, amplitude]."""
+        if not offset or not count:
+            return np.empty((0, 2), dtype=np.float32)
+        return np.frombuffer(self._raw_data, dtype='<f4', count=2 * count,
+                             offset=offset).reshape(count, 2)
+
     def get_port_sidescan(self) -> np.ndarray:
         """Extract port sidescan amplitudes as a float32 array."""
-        if not self.port_sidescan_offset or not self.port_sidescan_count:
-            return np.array([], dtype=np.float32)
-        
-        offset = self.port_sidescan_offset
-        # Sidescan points are stored as SidescanPoint structs (8 bytes each: range + amplitude)
-        samples = []
-        for _ in range(self.port_sidescan_count):
-            range_m, amplitude = struct.unpack('<ff', self._raw_data[offset:offset+8])
-            samples.append(amplitude)
-            offset += 8
-        
-        return np.array(samples, dtype=np.float32)
-    
+        return np.ascontiguousarray(
+            self._sidescan_points(self.port_sidescan_offset,
+                                  self.port_sidescan_count)[:, 1])
+
     def get_starboard_sidescan(self) -> np.ndarray:
         """Extract starboard sidescan amplitudes as a float32 array."""
-        if not self.starboard_sidescan_offset or not self.starboard_sidescan_count:
-            return np.array([], dtype=np.float32)
-        
-        offset = self.starboard_sidescan_offset
-        samples = []
-        for _ in range(self.starboard_sidescan_count):
-            range_m, amplitude = struct.unpack('<ff', self._raw_data[offset:offset+8])
-            samples.append(amplitude)
-            offset += 8
-        
-        return np.array(samples, dtype=np.float32)
+        return np.ascontiguousarray(
+            self._sidescan_points(self.starboard_sidescan_offset,
+                                  self.starboard_sidescan_count)[:, 1])
+
+    def get_port_sidescan_ranges(self) -> np.ndarray:
+        """Per-sample slant range (m) the head attached to each port sample."""
+        return np.ascontiguousarray(
+            self._sidescan_points(self.port_sidescan_offset,
+                                  self.port_sidescan_count)[:, 0])
+
+    def get_starboard_sidescan_ranges(self) -> np.ndarray:
+        """Per-sample slant range (m) for each starboard sample."""
+        return np.ascontiguousarray(
+            self._sidescan_points(self.starboard_sidescan_offset,
+                                  self.starboard_sidescan_count)[:, 0])
+
+    def sidescan_bin_spacing_m(self) -> float:
+        """Return the expected metres per sidescan sample: c_bulk / (2 fs).
+
+        The head sends one SidescanPoint per receive sample starting at range 0,
+        so consumers reconstruct range as ``i * c / (2 * sample_rate)``. (The
+        ``*_sidescan_range_resolution`` field is the pulse range resolution,
+        not this spacing.) Returns 0.0 if either input is missing.
+        """
+        c = float(self.parameters.sound_velocity.bulk)
+        fs = float(self.system_info.sample_rate)
+        if c <= 0.0 or fs <= 0.0:
+            return 0.0
+        return c / (2.0 * fs)
+
+    def check_sidescan_grid(self, rel_tol: float = 0.01) -> List[str]:
+        """Verify the per-sample ranges match the i*c/(2fs) grid consumers assume.
+
+        Downstream code (bags, exporters) discards the per-sample ranges and
+        rebuilds them from ``sample_rate`` + ``sound_velocity_bulk``. That is
+        only valid while the head emits every receive sample from range 0. If a
+        firmware/mode ever decimates or offsets the 2D sidescan (the 3D sidescan
+        already does), this flags it.
+
+        Checks per side (only where samples exist):
+          * first sample range within one bin of 0
+          * mean step ``(r[-1] - r[0]) / (N - 1)`` within ``rel_tol`` of c/(2fs)
+
+        Returns a list of human-readable problems; empty list means OK.
+        """
+        expected = self.sidescan_bin_spacing_m()
+        problems: List[str] = []
+        if expected <= 0.0:
+            return problems  # cannot evaluate without c and fs
+        for side, off, cnt in (
+                ('port', self.port_sidescan_offset, self.port_sidescan_count),
+                ('starboard', self.starboard_sidescan_offset,
+                 self.starboard_sidescan_count)):
+            if cnt < 2:
+                continue
+            r = self._sidescan_points(off, cnt)[:, 0]
+            r0 = float(r[0])
+            step = (float(r[-1]) - r0) / float(cnt - 1)
+            if abs(r0) > expected:
+                problems.append(
+                    f'{side} sidescan first sample at {r0:.4f} m, expected 0 '
+                    f'(start offset)')
+            if not math.isfinite(step) or abs(step - expected) > rel_tol * expected:
+                problems.append(
+                    f'{side} sidescan step {step:.5f} m/sample vs c/(2fs) '
+                    f'{expected:.5f} m (N={cnt}, span {float(r[-1]):.2f} m)')
+        return problems
+
+    def frame_problems(self) -> List[str]:
+        """Return reasons this frame's payload is not trustworthy ([] = clean).
+
+        A frame can parse (the 872-byte header is fixed-size and the section
+        offsets are clamped to the buffer) and still be garbage: when bytes go
+        missing upstream - a pcap with capture loss, a replayer skipping, a
+        link that dropped mid-frame - the next frame's bytes get spliced into
+        this frame's body at the advertised length. The symptoms are concrete
+        and cheap to test for, so a corrupt frame can be dropped whole instead
+        of leaking 1e19-metre points and ``inf`` amplitudes into every topic.
+
+        Checks:
+          * no DX preamble inside the body (a spliced-in next frame)
+          * sidescan sample grid is ``i*c/(2fs)`` (see check_sidescan_grid)
+          * sidescan amplitudes finite
+          * bathymetry / sidescan-3D ranges finite and within the range setting
+            (with slack) and angles within +-pi
+          * bathymetry quality counts are small integers, not reinterpreted
+            float garbage
+        """
+        problems: List[str] = []
+        body = self._raw_data
+        idx = body.find(DX_PREAMBLE, 1)
+        if idx >= 0:
+            problems.append(f'DX preamble inside body at byte {idx} (spliced frame)')
+            return problems  # everything after idx is another frame; no point going on
+
+        problems.extend(self.check_sidescan_grid())
+
+        for side, off, cnt in (
+                ('port', self.port_sidescan_offset, self.port_sidescan_count),
+                ('starboard', self.starboard_sidescan_offset,
+                 self.starboard_sidescan_count)):
+            if cnt:
+                amp = self._sidescan_points(off, cnt)[:, 1]
+                if not bool(np.isfinite(amp).all()):
+                    problems.append(f'{side} sidescan has non-finite amplitudes')
+
+        range_setting = float(self.parameters.range_m)
+        # Points can legitimately exceed the range setting slightly (the head
+        # keeps the tail of the receive window); garbage is orders off.
+        max_r = max(1.5 * range_setting, 10.0) if range_setting > 0 else SANE_MAX_RANGE_M
+        for name, off, cnt, raw in (
+                ('port bathymetry', self.port_bathymetry_offset,
+                 self.port_bathymetry_count, self._bathymetry_raw),
+                ('starboard bathymetry', self.starboard_bathymetry_offset,
+                 self.starboard_bathymetry_count, self._bathymetry_raw),
+                ('port sidescan3d', self.port_sidescan3d_offset,
+                 self.port_sidescan3d_count, self._sidescan3d_raw),
+                ('starboard sidescan3d', self.starboard_sidescan3d_offset,
+                 self.starboard_sidescan3d_count, self._sidescan3d_raw)):
+            if not cnt:
+                continue
+            pts = raw(off, cnt)
+            r, a = pts[:, 0], pts[:, 1]
+            if not bool(np.isfinite(pts).all()):
+                problems.append(f'{name} has non-finite values')
+                continue
+            if bool((r < 0).any()) or bool((r > max_r).any()):
+                problems.append(
+                    f'{name} range outside [0, {max_r:.0f}] m '
+                    f'(min {float(r.min()):.2f}, max {float(r.max()):.3g})')
+            if bool((np.abs(a) > math.pi).any()):
+                problems.append(f'{name} angle beyond +-pi (max {float(np.abs(a).max()):.3g})')
+
+        for side, off, cnt in (
+                ('port', self.port_bathymetry_offset, self.port_bathymetry_count),
+                ('starboard', self.starboard_bathymetry_offset,
+                 self.starboard_bathymetry_count)):
+            if cnt:
+                q = self._bathymetry_quality(off, cnt)
+                if float(q.max()) > 1.0e6:
+                    problems.append(
+                        f'{side} bathymetry quality count {float(q.max()):.3g} '
+                        '(not a sample count)')
+        return problems
     
     def get_all_bathymetry_xyz(self, transducer_tilt_deg: float = 30.0) -> np.ndarray:
         """
@@ -669,8 +838,10 @@ class DxData:
             return np.empty((0, 3), dtype=np.float32)
         
         # Vectorized extraction of range and angle arrays
-        port_data = np.array([(p.range_m, p.angle_rad) for p in port_points], dtype=np.float32)
-        stbd_data = np.array([(p.range_m, p.angle_rad) for p in starboard_points], dtype=np.float32)
+        port_data = np.array([(p.range_m, p.angle_rad) for p in port_points],
+                             dtype=np.float32)
+        stbd_data = np.array([(p.range_m, p.angle_rad) for p in starboard_points],
+                             dtype=np.float32)
         
         # Combine into single arrays
         if n_port > 0 and n_stbd > 0:
@@ -713,14 +884,24 @@ class DxData:
         return xyz
 
     def get_all_bathymetry_xyzi(
-            self, transducer_tilt_deg: float = 30.0) -> np.ndarray:
+            self, transducer_tilt_deg: float = 30.0,
+            tilt_port_deg: float = None,
+            tilt_stbd_deg: float = None) -> np.ndarray:
         """All bathymetry as Nx4 (x, y, z, intensity), corrupt points removed.
 
         Unlike pairing get_all_bathymetry_xyz() with a separately gathered
         amplitude list, this filters xyz AND intensity with the *same* validity
         mask, so the columns always stay aligned -- a single corrupt point no
         longer causes a length mismatch that drops the whole ping.
+
+        tilt_port_deg / tilt_stbd_deg allow a different tilt per side (the
+        sonar reports the two mounting angles independently); either falling
+        back to transducer_tilt_deg when None.
         """
+        if tilt_port_deg is None:
+            tilt_port_deg = transducer_tilt_deg
+        if tilt_stbd_deg is None:
+            tilt_stbd_deg = transducer_tilt_deg
         port_points = self.get_port_bathymetry()
         starboard_points = self.get_starboard_bathymetry()
 
@@ -739,7 +920,9 @@ class DxData:
         angles = all_data[:, 1]
         amplitudes = all_data[:, 2]
 
-        tilt_rad = np.radians(transducer_tilt_deg)
+        tilt_rad = np.empty(n_total, dtype=np.float32)
+        tilt_rad[:n_port] = np.radians(tilt_port_deg)
+        tilt_rad[n_port:] = np.radians(tilt_stbd_deg)
         total_angles = tilt_rad + angles
         horizontal = ranges * np.cos(total_angles)
         depth = ranges * np.sin(total_angles)
@@ -758,7 +941,214 @@ class DxData:
             xyzi = xyzi[valid]
 
         return xyzi
+
+    # ----- vectorised point-section access -------------------------------
+
+    def _bathymetry_raw(self, offset: int, count: int) -> np.ndarray:
+        """(count, 5) float32 view of BathymetryPoint structs.
+
+        Columns: range, angle, amplitude, reserved1, reserved2. ``reserved1``
+        is actually a uint32 written into the float slot (reads as denormals);
+        use :meth:`_bathymetry_quality` to get it as a number.
+        """
+        if not offset or not count:
+            return np.empty((0, 5), dtype=np.float32)
+        return np.frombuffer(self._raw_data, dtype='<f4', count=5 * count,
+                             offset=offset).reshape(count, 5)
+
+    def _bathymetry_quality(self, offset: int, count: int) -> np.ndarray:
+        """Per-point ``reserved1`` of BathymetryPoint reinterpreted as uint32.
+
+        On real data this is an integer 1..~200 (median ~9) that grows with
+        range and is independent of amplitude - consistent with the number of
+        sidescan-3D samples binned into the point, i.e. a quality/confidence
+        count. Returned as float32 so it can ride in a PointCloud2 field.
+        """
+        if not offset or not count:
+            return np.empty((0,), dtype=np.float32)
+        u = np.frombuffer(self._raw_data, dtype='<u4', count=5 * count,
+                          offset=offset).reshape(count, 5)[:, 3]
+        return u.astype(np.float32)
+
+    def get_all_bathymetry_xyziq(
+            self, tilt_port_deg: float, tilt_stbd_deg: float) -> np.ndarray:
+        """All bathymetry as Nx5 (x, y, z, intensity, quality), vectorised.
+
+        Same geometry and corruption mask as :meth:`get_all_bathymetry_xyzi`,
+        plus the per-point sample count from the vendor ``reserved1`` slot as
+        ``quality``. Reads the sections with ``np.frombuffer`` instead of
+        building a BathymetryPoint object per point.
+        """
+        port = self._bathymetry_raw(self.port_bathymetry_offset,
+                                    self.port_bathymetry_count)
+        stbd = self._bathymetry_raw(self.starboard_bathymetry_offset,
+                                    self.starboard_bathymetry_count)
+        n_port = port.shape[0]
+        n_total = n_port + stbd.shape[0]
+        if n_total == 0:
+            return np.empty((0, 5), dtype=np.float32)
+        raw = np.concatenate([port, stbd]) if stbd.shape[0] else port
+        ranges = raw[:, 0]
+        angles = raw[:, 1]
+        quality = np.concatenate([
+            self._bathymetry_quality(self.port_bathymetry_offset,
+                                     self.port_bathymetry_count),
+            self._bathymetry_quality(self.starboard_bathymetry_offset,
+                                     self.starboard_bathymetry_count)])
+
+        out = np.empty((n_total, 5), dtype=np.float32)
+        out[:, :3] = polar_to_sonar_xyz(ranges, angles, n_port,
+                                        tilt_port_deg, tilt_stbd_deg)
+        out[:, 3] = np.nan_to_num(raw[:, 2], nan=0.0, posinf=0.0, neginf=0.0)
+        out[:, 4] = quality
+
+        valid = (np.isfinite(ranges) & np.isfinite(angles)
+                 & (ranges >= 0.0) & (ranges <= SANE_MAX_RANGE_M))
+        if not bool(valid.all()):
+            out = out[valid]
+        return out
+
+    def _sidescan3d_raw(self, offset: int, count: int) -> np.ndarray:
+        """(count, 4) float32 view of Sidescan3DPoint: range, angle, amp, snr."""
+        if not offset or not count:
+            return np.empty((0, 4), dtype=np.float32)
+        return np.frombuffer(self._raw_data, dtype='<f4', count=4 * count,
+                             offset=offset).reshape(count, 4)
+
+    def get_port_sidescan3d(self) -> np.ndarray:
+        """Port sidescan-3D points as (N, 4): range_m, angle_rad, amplitude, snr_db."""
+        return np.ascontiguousarray(self._sidescan3d_raw(
+            self.port_sidescan3d_offset, self.port_sidescan3d_count))
+
+    def get_starboard_sidescan3d(self) -> np.ndarray:
+        """Starboard sidescan-3D points as (N, 4): range_m, angle_rad, amplitude, snr_db."""
+        return np.ascontiguousarray(self._sidescan3d_raw(
+            self.starboard_sidescan3d_offset, self.starboard_sidescan3d_count))
+
+    def get_all_sidescan3d_xyzis(
+            self, tilt_port_deg: float, tilt_stbd_deg: float) -> np.ndarray:
+        """All sidescan-3D points as Nx5 (x, y, z, intensity, snr_db).
+
+        This is the full 3D point set the head computes - every range step,
+        several angles per range, water column included - of which the
+        bathymetry section is the bottom-tracked subset. Same sonar-frame
+        geometry and corruption mask as the bathymetry cloud.
+        """
+        port = self._sidescan3d_raw(self.port_sidescan3d_offset,
+                                    self.port_sidescan3d_count)
+        stbd = self._sidescan3d_raw(self.starboard_sidescan3d_offset,
+                                    self.starboard_sidescan3d_count)
+        n_port = port.shape[0]
+        n_total = n_port + stbd.shape[0]
+        if n_total == 0:
+            return np.empty((0, 5), dtype=np.float32)
+        raw = np.concatenate([port, stbd]) if stbd.shape[0] else port
+        ranges = raw[:, 0]
+        angles = raw[:, 1]
+
+        out = np.empty((n_total, 5), dtype=np.float32)
+        out[:, :3] = polar_to_sonar_xyz(ranges, angles, n_port,
+                                        tilt_port_deg, tilt_stbd_deg)
+        out[:, 3] = np.nan_to_num(raw[:, 2], nan=0.0, posinf=0.0, neginf=0.0)
+        out[:, 4] = np.nan_to_num(raw[:, 3], nan=0.0, posinf=0.0, neginf=0.0)
+
+        valid = (np.isfinite(ranges) & np.isfinite(angles)
+                 & (ranges >= 0.0) & (ranges <= SANE_MAX_RANGE_M))
+        if not bool(valid.all()):
+            out = out[valid]
+        return out
+
+    def settings_snapshot(self) -> dict:
+        """Flat dict of every DxParameters/DxSystemInfo value for this ping.
+
+        Keys match ``pingdsp_msg/SonarSettings`` field names so the driver can
+        assign them directly and compare snapshots between pings to publish
+        only on change.
+        """
+        p, si = self.parameters, self.system_info
+        return {
+            'sonar_id': si.sonar_id,
+            'acoustic_frequency': float(si.acoustic_frequency),
+            'sample_rate': float(si.sample_rate),
+            'maximum_ping_rate': float(si.maximum_ping_rate),
+            'port_transducer_angle': float(si.port_transducer_angle),
+            'starboard_transducer_angle': float(si.starboard_transducer_angle),
+            'range': float(p.range_m),
+            'sidescan_bin_spacing': float(self.sidescan_bin_spacing_m()),
+            'port_sidescan_range_resolution': float(si.port_sidescan_range_resolution),
+            'starboard_sidescan_range_resolution': float(si.starboard_sidescan_range_resolution),
+            'port_sidescan3d_range_resolution': float(si.port_sidescan3d_range_resolution),
+            'starboard_sidescan3d_range_resolution':
+                float(si.starboard_sidescan3d_range_resolution),
+            'sound_velocity_bulk': float(p.sound_velocity.bulk),
+            'sound_velocity_face': float(p.sound_velocity.face),
+            'port_gain_constant': float(p.port_gain.constant),
+            'port_gain_linear': float(p.port_gain.linear),
+            'port_gain_logarithmic': float(p.port_gain.logarithmic),
+            'starboard_gain_constant': float(p.starboard_gain.constant),
+            'starboard_gain_linear': float(p.starboard_gain.linear),
+            'starboard_gain_logarithmic': float(p.starboard_gain.logarithmic),
+            'port_transmit_angle': float(p.port_transmit.angle),
+            'port_transmit_power': int(p.port_transmit.power),
+            'port_transmit_beamwidth': p.port_transmit.beamwidth,
+            'port_transmit_pulse': p.port_transmit.pulse,
+            'starboard_transmit_angle': float(p.starboard_transmit.angle),
+            'starboard_transmit_power': int(p.starboard_transmit.power),
+            'starboard_transmit_beamwidth': p.starboard_transmit.beamwidth,
+            'starboard_transmit_pulse': p.starboard_transmit.pulse,
+            'trigger_source': p.trigger.source,
+            'trigger_continuous_duty_cycle': float(p.trigger.continuous_duty_cycle),
+            'port_sidescan_mode': p.port_sidescan.mode,
+            'port_sidescan_incoherent_method': p.port_sidescan.incoherent_method,
+            'port_sidescan_coherent_beams': p.port_sidescan.coherent_beams,
+            'starboard_sidescan_mode': p.starboard_sidescan.mode,
+            'starboard_sidescan_incoherent_method': p.starboard_sidescan.incoherent_method,
+            'starboard_sidescan_coherent_beams': p.starboard_sidescan.coherent_beams,
+            'port_sidescan3d_smoothing': int(p.port_sidescan3d.smoothing),
+            'port_sidescan3d_tolerance': float(p.port_sidescan3d.tolerance),
+            'port_sidescan3d_threshold': float(p.port_sidescan3d.threshold),
+            'port_sidescan3d_number_of_angles': int(p.port_sidescan3d.number_of_angles),
+            'starboard_sidescan3d_smoothing': int(p.starboard_sidescan3d.smoothing),
+            'starboard_sidescan3d_tolerance': float(p.starboard_sidescan3d.tolerance),
+            'starboard_sidescan3d_threshold': float(p.starboard_sidescan3d.threshold),
+            'starboard_sidescan3d_number_of_angles': int(p.starboard_sidescan3d.number_of_angles),
+        }
     
+    # Physically plausible mounting tilt magnitudes; anything outside this is a
+    # zeroed/garbage field rather than a real angle.
+    _SANE_TILT_RANGE = (1.0, 89.0)
+
+    def reported_transducer_tilts(self, fallback_deg: float):
+        """Per-side transducer tilt in this parser's sign convention.
+
+        The sonar reports its housing mounting angles with **positive =
+        downward** (vendor ``DxSystemInfo``), whereas the geometry here treats
+        **negative = downward** (``total_angle = tilt + beam_angle``), so the
+        reported values are negated. Using the reported angles keeps the
+        solution correct if the two sides are mounted asymmetrically, which a
+        single tilt parameter cannot represent.
+
+        A side whose reported angle is missing or implausible falls back to
+        ``fallback_deg``.
+
+        Returns:
+            (tilt_port_deg, tilt_stbd_deg)
+        """
+        lo, hi = self._SANE_TILT_RANGE
+        out = []
+        for reported in (self.system_info.port_transducer_angle,
+                         self.system_info.starboard_transducer_angle):
+            try:
+                val = float(reported)
+            except (TypeError, ValueError):
+                out.append(fallback_deg)
+                continue
+            if math.isfinite(val) and lo <= abs(val) <= hi:
+                out.append(-abs(val))
+            else:
+                out.append(fallback_deg)
+        return out[0], out[1]
+
     def get_recorded_filename(self) -> str:
         """Extract recorded filename string."""
         if self.recorded_filename_offset:

@@ -85,3 +85,44 @@ def test_meridian_convergence_sign():
     # West of central meridian -> negative convergence in N hemisphere.
     conv = np.meridian_convergence_rad(48.4197, -4.4721, 30)
     assert conv < 0
+
+
+# --- head status / proprietary sentences (real samples from Orebro pcaps) ---
+
+def test_parse_gpgst_sigmas():
+    lat_sd, lon_sd, alt_sd = np.parse_gpgst(
+        '$GPGST,084540.10,0.149,0.008,0.004,2.368,0.008,0.004,0.014*5D')
+    assert lat_sd == pytest.approx(0.008)
+    assert lon_sd == pytest.approx(0.004)
+    assert alt_sd == pytest.approx(0.014)
+    assert np.parse_gpgst('$GPGST,084540.10,,,,,,,*00') is None
+    assert np.parse_gpgst('$GPGGA,1,2') is None
+
+
+def test_parse_pdnde_nadir_depth():
+    nadir, f2, f3, f4 = np.parse_pdnde('$PDNDE,-3.98,-0.63,64,271*6A')
+    assert nadir == pytest.approx(-3.98)
+    assert f2 == pytest.approx(-0.63)
+    assert (f3, f4) == (64, 271)
+    assert np.parse_pdnde('$PDNDE,,,,') is None
+    assert np.parse_pdnde('$PDNDE,x,0,0,0') is None
+
+
+def test_parse_pdsvm_probe():
+    sv, temp, make, serial = np.parse_pdsvm('$PDSVM,1483.230,20.12,AML,222864*2A')
+    assert sv == pytest.approx(1483.23)
+    assert temp == pytest.approx(20.12)
+    assert (make, serial) == ('AML', '222864')
+    assert np.parse_pdsvm('$PDSVM,abc,20') is None
+
+
+def test_parse_pdhxt_mcu_temperature():
+    assert np.parse_pdhxt('$PDHXT,MCU,037*00') == ('MCU', pytest.approx(37.0))
+    assert np.parse_pdhxt('$PDHXT,MCU') is None
+
+
+def test_parse_pdhxp_rail():
+    rail, vals = np.parse_pdhxp('$PDHXP,D1V2,1218,1218,0000,1218,1221,0063,01487*00')
+    assert rail == 'D1V2'
+    assert vals == (1218, 1218, 0, 1218, 1221, 63, 1487)
+    assert np.parse_pdhxp('$PDHXP') is None

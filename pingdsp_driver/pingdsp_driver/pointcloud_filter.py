@@ -14,7 +14,7 @@ Filters applied:
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import PointCloud2, PointField
 import sensor_msgs_py.point_cloud2 as pc2
 import numpy as np
 from std_msgs.msg import Header
@@ -90,30 +90,35 @@ class PointCloudFilter(Node):
             if self.enable_intensity_filter:
                 self.get_logger().info(f'  Intensity: >={self.min_intensity:.2f}')
             if self.enable_altitude_filter:
-                self.get_logger().info(f'  Altitude: [{self.min_altitude:.1f}, {self.max_altitude:.1f}] m')
+                self.get_logger().info(
+                    f'  Altitude: [{self.min_altitude:.1f}, {self.max_altitude:.1f}] m')
             if self.enable_consecutive_filter:
                 self.get_logger().info(f'  Consecutive jump: <{self.max_consecutive_jump:.1f} m')
     
     def pointcloud_callback(self, msg: PointCloud2):
         """Process incoming point cloud."""
         try:
-            # Extract points
-            points_list = list(pc2.read_points(msg, field_names=('x', 'y', 'z', 'intensity'), skip_nans=True))
+            # Extract every FLOAT32 field, x/y/z/intensity first so the
+            # column indices the filters use (0-2 xyz, 3 intensity) stay
+            # fixed; extra driver fields (quality, snr, ...) ride along and
+            # are republished untouched.
+            field_names = self._field_order(msg)
+            points = pc2.read_points_numpy(msg, field_names=field_names,
+                                           skip_nans=True)
+            points = np.ascontiguousarray(points, dtype=np.float32)
+            if points.ndim == 1:
+                points = points.reshape(-1, len(field_names))
             
-            if len(points_list) == 0:
+            if len(points) == 0:
                 # Empty cloud, just republish
                 self.publisher.publish(msg)
                 return
-            
-            # Convert structured array to regular array
-            # points_list is a list of tuples (x, y, z, intensity)
-            points = np.array([(p[0], p[1], p[2], p[3]) for p in points_list], dtype=np.float32)
             
             self.total_points_in += len(points)
             
             if not self.enable_filtering:
                 # Pass through without filtering
-                self.publish_pointcloud(points, msg.header)
+                self.publish_pointcloud(points, msg.header, field_names)
                 self.total_points_out += len(points)
                 return
             
@@ -138,14 +143,15 @@ class PointCloudFilter(Node):
                 return
             
             # Publish filtered cloud
-            self.publish_pointcloud(points, msg.header)
+            self.publish_pointcloud(points, msg.header, field_names)
             self.total_points_out += len(points)
             
             self.processed_count += 1
             
             # Log statistics periodically
             if self.processed_count % 100 == 0:
-                retention_rate = (self.total_points_out / self.total_points_in * 100) if self.total_points_in > 0 else 0
+                retention_rate = ((self.total_points_out / self.total_points_in * 100)
+                                  if self.total_points_in > 0 else 0)
                 self.get_logger().info(
                     f'Processed {self.processed_count} clouds, '
                     f'retention: {retention_rate:.1f}% '
@@ -241,33 +247,42 @@ class PointCloudFilter(Node):
         
         return points[valid_mask]
     
-    def publish_pointcloud(self, points: np.ndarray, header: Header):
+    @staticmethod
+    def _field_order(msg: PointCloud2) -> tuple:
+        """Field names to read: x, y, z, intensity, then any other FLOAT32 field."""
+        names = [f.name for f in msg.fields if f.datatype == PointField.FLOAT32]
+        head = [n for n in ('x', 'y', 'z', 'intensity') if n in names]
+        if len(head) < 4:
+            missing = {'x', 'y', 'z', 'intensity'} - set(head)
+            raise ValueError(f'point cloud lacks FLOAT32 fields {sorted(missing)}')
+        return tuple(head + [n for n in names if n not in head])
+
+    def publish_pointcloud(self, points: np.ndarray, header: Header,
+                           field_names=('x', 'y', 'z', 'intensity')):
         """
         Publish filtered point cloud.
         
         Args:
-            points: Nx4 array [x, y, z, intensity]
+            points: NxK array; column k is ``field_names[k]`` (FLOAT32)
             header: Original message header (preserve frame_id and timestamp)
+            field_names: field name per column
         """
         msg = PointCloud2()
         msg.header = header
         msg.height = 1
         msg.width = len(points)
         
-        from sensor_msgs.msg import PointField
         msg.fields = [
-            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
-            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
-            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
-            PointField(name='intensity', offset=12, datatype=PointField.FLOAT32, count=1),
+            PointField(name=name, offset=4 * i, datatype=PointField.FLOAT32, count=1)
+            for i, name in enumerate(field_names)
         ]
         
         msg.is_bigendian = False
-        msg.point_step = 16
+        msg.point_step = 4 * len(field_names)
         msg.row_step = msg.point_step * msg.width
         msg.is_dense = True
         
-        msg.data = points.astype(np.float32).tobytes()
+        msg.data = np.ascontiguousarray(points, dtype=np.float32).tobytes()
         
         self.publisher.publish(msg)
 

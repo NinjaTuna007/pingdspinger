@@ -179,6 +179,115 @@ def parse_gprmc(sentence: str) -> Optional[float]:
     return None
 
 
+def _strip_checksum(sentence: str) -> str:
+    """Drop a trailing ``*cc`` NMEA checksum, if present."""
+    star = sentence.rfind('*')
+    return sentence[:star] if star >= 0 else sentence
+
+
+def parse_gpgst(sentence: str) -> Optional[Tuple[float, float, float]]:
+    """
+    Parse a ``$GPGST`` / ``$GNGST`` pseudorange error statistics sentence.
+
+    Format: ``$--GST,hhmmss.ss,rms,smaj,smin,orient,lat_sd,lon_sd,alt_sd*cc``
+    (all standard deviations in metres).
+
+    Returns:
+        ``(lat_sd_m, lon_sd_m, alt_sd_m)`` or None.
+    """
+    try:
+        parts = _strip_checksum(sentence).split(',')
+        if len(parts) >= 9 and parts[6] and parts[7] and parts[8]:
+            return float(parts[6]), float(parts[7]), float(parts[8])
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
+def parse_pdnde(sentence: str) -> Optional[Tuple[float, float, int, int]]:
+    """
+    Parse the 3DSS-DX proprietary ``$PDNDE`` nadir-depth sentence.
+
+    Format: ``$PDNDE,<nadir_depth>,<f2>,<f3>,<f4>*cc``. The head emits one per
+    ping from its internal source. ``nadir_depth`` is metres, negative = below
+    the sonar, and matches the bathymetry median z for the ping (verified on
+    Örebro data). The other three fields are undocumented and returned raw.
+
+    Returns:
+        ``(nadir_depth_m, field2, field3, field4)`` or None.
+    """
+    try:
+        parts = _strip_checksum(sentence).split(',')
+        if len(parts) >= 5 and parts[0].endswith('PDNDE'):
+            return (float(parts[1]), float(parts[2]),
+                    int(float(parts[3])), int(float(parts[4])))
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
+def parse_pdsvm(sentence: str) -> Optional[Tuple[float, float, str, str]]:
+    """
+    Parse the ``$PDSVM`` sound-velocity probe sentence.
+
+    Format: ``$PDSVM,<sv_m_s>,<temp_c>,<make>,<serial>*cc`` - the AML probe at
+    the transducer face. ``sv`` is what the head reports as
+    ``sound_velocity.face``; the temperature is otherwise lost.
+
+    Returns:
+        ``(sound_velocity_m_s, temperature_c, make, serial)`` or None.
+    """
+    try:
+        parts = _strip_checksum(sentence).split(',')
+        if len(parts) >= 3 and parts[0].endswith('PDSVM'):
+            make = parts[3] if len(parts) > 3 else ''
+            serial = parts[4] if len(parts) > 4 else ''
+            return float(parts[1]), float(parts[2]), make, serial
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
+def parse_pdhxt(sentence: str) -> Optional[Tuple[str, float]]:
+    """
+    Parse the ``$PDHXT`` hardware temperature sentence.
+
+    Format: ``$PDHXT,<sensor>,<temp_c>*cc`` (seen: ``$PDHXT,MCU,037``).
+
+    Returns:
+        ``(sensor_name, temperature_c)`` or None.
+    """
+    try:
+        parts = _strip_checksum(sentence).split(',')
+        if len(parts) >= 3 and parts[0].endswith('PDHXT') and parts[2]:
+            return parts[1], float(parts[2])
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
+def parse_pdhxp(sentence: str) -> Optional[Tuple[str, Tuple[int, ...]]]:
+    """
+    Parse the ``$PDHXP`` hardware power-rail telemetry sentence.
+
+    Format: ``$PDHXP,<rail>,<v1>,<v2>,...*cc`` (seen:
+    ``$PDHXP,D1V2,1218,1218,0000,1218,1221,0063,01487``). The head cycles
+    through rails on successive pings. Field meanings are undocumented; the
+    integers are returned raw for diagnostics.
+
+    Returns:
+        ``(rail_name, values)`` or None.
+    """
+    try:
+        parts = _strip_checksum(sentence).split(',')
+        if len(parts) >= 3 and parts[0].endswith('PDHXP'):
+            vals = tuple(int(p) for p in parts[2:] if p != '')
+            return parts[1], vals
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
 def ned_heading_deg_to_enu_yaw_rad(heading_ned_deg: float,
                                    meridian_convergence_rad: float = 0.0
                                    ) -> float:

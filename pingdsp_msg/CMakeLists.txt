@@ -15,6 +15,8 @@ find_package(std_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Ping3DSS.msg"
   "msg/SystemInfo.msg"
+  "msg/SonarSettings.msg"
+  "msg/SonarAltitude.msg"
   "srv/AppControl.srv"
   "srv/GainSettings.srv"
   "srv/SidescanSettings.srv"

@@ -170,12 +170,23 @@ class RosProbe:
         self._spin = threading.Thread(target=self._exec.spin, daemon=True)
         self._spin.start()
 
-    def collect(self, msg_type, topic, depth=10):
-        """Subscribe and return a list that grows as messages arrive."""
-        from rclpy.qos import (HistoryPolicy, QoSProfile, ReliabilityPolicy)
-        qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST, depth=depth)
+    def collect(self, msg_type, topic, depth=10, transient_local=False):
+        """Subscribe and return a list that grows as messages arrive.
+
+        ``transient_local=True`` requests a latched (reliable, transient-local)
+        subscription so a late probe still receives the last sample.
+        """
+        from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
+                               ReliabilityPolicy)
+        if transient_local:
+            qos = QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                history=HistoryPolicy.KEEP_LAST, depth=depth)
+        else:
+            qos = QoSProfile(
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+                history=HistoryPolicy.KEEP_LAST, depth=depth)
         received = []
         self.node.create_subscription(
             msg_type, topic, lambda m: received.append(m), qos)
@@ -247,6 +258,14 @@ class Stack:
 
     def start_node(self, exe_path, extra_args=None):
         proc = spawn_node(exe_path, extra_args=extra_args, env=self._env)
+        self.nodes.append(proc)
+        return proc
+
+    def start_process(self, argv, cwd=None):
+        """Launch an arbitrary command (e.g. ``ros2 bag record``) in this domain."""
+        proc = _track(subprocess.Popen(
+            argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, env=self._env))
         self.nodes.append(proc)
         return proc
 

@@ -5,7 +5,13 @@ ROS 2 driver for the PingDSP 3DSS-DX sonar (TCP streaming).
 
 ## Features
 - TCP client for 3DSS-DX data
-- Point cloud filtering and recording
+- Publishes everything the head sends: raw sidescan (`sonar/ping`), bottom-tracked
+  bathymetry with per-point quality (`sonar/bathymetry`), the full sidescan-3D
+  point set with SNR (`sonar/sidescan3d`), the settings in effect (`sonar/settings`,
+  latched), the head's nadir depth (`sonar/altitude`), probe/MCU temperatures and
+  power-rail diagnostics, and the embedded GNSS fix with GST covariance (`sonar/fix`).
+  Topic table: [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md#tdss_driver-topics).
+- Point cloud filtering and recording (the filter keeps extra fields such as `quality`)
 - ROS 2 bag recording support
 - PCAP replay for offline testing
 
@@ -47,7 +53,9 @@ To update installed configs/scripts, rebuild and re-source the workspace.
 | `reconnect_delay` | float | 5.0 | Delay between reconnection attempts (seconds) |
 | `publish_sidescan` | bool | true | Whether to publish sidescan waterfall imagery |
 | `waterfall_max_height` | int | 500 | Maximum number of pings in waterfall buffer |
-| `transducer_tilt_deg` | float | -20.0 | Downward tilt angle of transducer in degrees |
+| `transducer_tilt_deg` | float | -20.0 | Fallback downward tilt of transducer, degrees (negative = downward) |
+| `use_reported_transducer_angles` | bool | true | Use the per-side mounting angles the sonar reports, falling back to `transducer_tilt_deg` per side |
+| `publish_sidescan3d` | bool | true | Create the `sonar/sidescan3d` PointCloud2 publisher (full 3D set, `x y z intensity snr`). Data is only serialised while something subscribes. |
 |-----------|------|---------|-------------|
 | `sonar_host` | string | '192.168.228.50' | IP of the PC running 3DSS-DX Control |
 | `sonar_port` | int | 23848 | TCP port of the 3DSS-DX data stream |

@@ -3,8 +3,16 @@
 ROS 2 Driver for PingDSP 3DSS-DX Sonar
 
 Connects to 3DSS-DX sonar via TCP and publishes:
-- PointCloud2: Bathymetry point clouds
+- PointCloud2 sonar/bathymetry: bottom-tracked bathymetry (x, y, z, intensity,
+  quality = head's per-point sample count)
+- PointCloud2 sonar/sidescan3d: the full sidescan-3D point set the head
+  computes (x, y, z, intensity, snr) - bathymetry is its bottom-tracked subset
 - Ping3DSS: Full ping with raw port/starboard sidescan samples + metadata
+- SonarSettings sonar/settings (latched, on change): TVG gain, pulse, power,
+  beamwidth, trigger, 2D/3D processing settings, sample rate, sound velocity
+- SonarAltitude sonar/altitude: the head's own nadir depth ($PDNDE)
+- Temperature sonar/water_temperature ($PDSVM probe) and
+  sonar/mcu_temperature ($PDHXT); DiagnosticArray /diagnostics ($PDHXP rails)
 - PoseStamped / Path: vehicle position and trajectory (from NMEA sentences)
 - TF: map -> odom -> sonar
 
@@ -16,15 +24,18 @@ renders the same waterfall on demand from the raw Ping3DSS samples.
 import rclpy
 from rclpy.node import Node
 from rclpy.time import Time
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
+                       ReliabilityPolicy)
 
-from sensor_msgs.msg import PointCloud2, PointField, NavSatFix, NavSatStatus
+from sensor_msgs.msg import (PointCloud2, PointField, NavSatFix, NavSatStatus,
+                             Temperature)
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import Path
 from std_msgs.msg import Header, String, Float32, Int32
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from tf2_ros import TransformBroadcaster
 
-from pingdsp_msg.msg import Ping3DSS
+from pingdsp_msg.msg import Ping3DSS, SonarSettings, SonarAltitude
 
 import numpy as np
 import logging
@@ -52,6 +63,11 @@ class TdssDxDriver(Node):
         self.declare_parameter('map_frame_id', 'map')
         self.declare_parameter('reconnect_delay', 5.0)
         self.declare_parameter('transducer_tilt_deg', -20.0)  # Downward tilt angle
+        # The 3DSS-DX reports the tilt of each transducer as mounted in its
+        # housing. Trusting that over transducer_tilt_deg keeps the geometry
+        # right if the head is swapped or the sides differ; the parameter stays
+        # as the fallback when the reported field is absent or implausible.
+        self.declare_parameter('use_reported_transducer_angles', True)
         # Pose/TF ownership. When the SBG stack (pingdsp_sbg) is running it is
         # the authoritative source of the vehicle pose and the map/odom/base TF
         # tree, so the sonar driver must NOT also publish them. Set both false
@@ -98,6 +114,11 @@ class TdssDxDriver(Node):
         # the reader fall behind (latency creep). Off by default; the sidescan
         # viewer (the only sonar/ping consumer) does not need it.
         self.declare_parameter('include_bathymetry_in_ping', False)
+        # The head's full sidescan-3D point set (every range step, several
+        # angles per range, water column included, with per-point SNR). The
+        # bathymetry topic is the bottom-tracked subset of this. ~10-50 KB per
+        # ping as PointCloud2; published only while something subscribes.
+        self.declare_parameter('publish_sidescan3d', True)
         
         # Get parameters
         self.sonar_host = self.get_parameter('sonar_host').value
@@ -107,6 +128,14 @@ class TdssDxDriver(Node):
         self.map_frame_id = self.get_parameter('map_frame_id').value
         self.reconnect_delay = self.get_parameter('reconnect_delay').value
         self.transducer_tilt_deg = self.get_parameter('transducer_tilt_deg').value
+        self.use_reported_transducer_angles = bool(
+            self.get_parameter('use_reported_transducer_angles').value)
+        self._logged_tilt = None
+        # Sidescan sample-grid guard (see DxData.check_sidescan_grid).
+        self._logged_ss_grid = None
+        # Frames rejected by DxData.frame_problems() (never published).
+        self.corrupt_frames = 0
+        self._last_corrupt_reported = 0
         self.publish_tf_enabled = bool(self.get_parameter('publish_tf').value)
         self.publish_odometry_enabled = bool(
             self.get_parameter('publish_odometry').value)
@@ -120,6 +149,13 @@ class TdssDxDriver(Node):
             self.get_parameter('rx_backlog_warn_bytes').value)
         self.include_bathymetry_in_ping = bool(
             self.get_parameter('include_bathymetry_in_ping').value)
+        self.publish_sidescan3d_enabled = bool(
+            self.get_parameter('publish_sidescan3d').value)
+        # Settings snapshot published on change (see _publish_settings).
+        self._settings_key = None
+        self._settings_ping = 0
+        # Latest GNSS 1-sigma from $GPGST, for the NavSatFix covariance.
+        self._gnss_sd = None
         
         # Setup logging
         logging.basicConfig(level=logging.INFO)
@@ -139,9 +175,56 @@ class TdssDxDriver(Node):
             sensor_qos
         )
         
+        # Full sidescan-3D point set (x, y, z, intensity, snr).
+        self.sidescan3d_pub = None
+        if self.publish_sidescan3d_enabled:
+            self.sidescan3d_pub = self.create_publisher(
+                PointCloud2,
+                'sonar/sidescan3d',
+                sensor_qos
+            )
+        
         self.ping_pub = self.create_publisher(
             Ping3DSS,
             'sonar/ping',
+            10
+        )
+
+        # Settings in effect: latched (transient local) so late subscribers
+        # and bag recorders started mid-run still receive the current values.
+        self.settings_pub = self.create_publisher(
+            SonarSettings,
+            'sonar/settings',
+            QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1)
+        )
+
+        # Head's own nadir depth ($PDNDE), one per ping.
+        self.altitude_pub = self.create_publisher(
+            SonarAltitude,
+            'sonar/altitude',
+            10
+        )
+
+        # Probe water temperature ($PDSVM) and MCU temperature ($PDHXT).
+        self.water_temp_pub = self.create_publisher(
+            Temperature,
+            'sonar/water_temperature',
+            10
+        )
+        self.mcu_temp_pub = self.create_publisher(
+            Temperature,
+            'sonar/mcu_temperature',
+            10
+        )
+        # Hardware telemetry (power rails, temperatures, SV probe) on the
+        # standard diagnostics topic.
+        self.diag_pub = self.create_publisher(
+            DiagnosticArray,
+            '/diagnostics',
             10
         )
         
@@ -361,6 +444,17 @@ class TdssDxDriver(Node):
     
     def process_ping(self, data: DxData):
         """Process a received ping and publish ROS messages."""
+        # Integrity gate: a frame whose body carries another frame's bytes
+        # (upstream loss, replay skip) parses fine but is garbage end to end.
+        # Drop it whole rather than publish 1e19 m points and inf amplitudes.
+        problems = data.frame_problems()
+        if problems:
+            self.corrupt_frames += 1
+            self.logger.warning(
+                f'Dropped corrupt frame (ping {data.ping_id}, '
+                f'{self.corrupt_frames} dropped so far): ' + '; '.join(problems),
+                throttle_duration_sec=10.0)
+            return
         self.ping_count += 1
         
         # Create timestamp
@@ -378,8 +472,12 @@ class TdssDxDriver(Node):
             self.odom_origin_roll = self.current_roll
             self.odom_origin_pitch = self.current_pitch
             self.odom_origin_yaw = self.current_yaw
-            self.logger.info(f"Odom origin set at pos=({self.odom_origin_x:.2f}, {self.odom_origin_y:.2f}, {self.odom_origin_z:.2f}) "
-                           f"rot=({np.rad2deg(self.odom_origin_roll):.1f}°, {np.rad2deg(self.odom_origin_pitch):.1f}°, {np.rad2deg(self.odom_origin_yaw):.1f}°)")
+            self.logger.info(
+                f"Odom origin set at pos=({self.odom_origin_x:.2f}, "
+                f"{self.odom_origin_y:.2f}, {self.odom_origin_z:.2f}) "
+                f"rot=({np.rad2deg(self.odom_origin_roll):.1f}°, "
+                f"{np.rad2deg(self.odom_origin_pitch):.1f}°, "
+                f"{np.rad2deg(self.odom_origin_yaw):.1f}°)")
         
         # Publish TF tree: map -> odom -> sonar (unless the SBG stack owns it)
         if self.publish_tf_enabled:
@@ -399,6 +497,16 @@ class TdssDxDriver(Node):
         # Publish bathymetry point cloud
         if self.pointcloud_pub.get_subscription_count() > 0:
             self.publish_bathymetry(data, timestamp)
+
+        # Full sidescan-3D point set (bathymetry is its bottom-tracked subset)
+        if (self.sidescan3d_pub is not None
+                and self.sidescan3d_pub.get_subscription_count() > 0):
+            self.publish_sidescan3d(data, timestamp)
+
+        # Settings snapshot (only when something changed), head telemetry
+        # from the proprietary ASCII sentences (altitude, temperatures, rails)
+        self._publish_settings(data, timestamp)
+        self._publish_telemetry(data, timestamp)
         
         # Publish ASCII data (NMEA, TSS1)
         if self.ascii_pub.get_subscription_count() > 0:
@@ -492,6 +600,11 @@ class TdssDxDriver(Node):
                 f"{client.bytes_discarded} bytes discarded) - lost framing.",
                 throttle_duration_sec=5.0)
             self._last_resync = client.resync_count
+        if self.corrupt_frames > self._last_corrupt_reported:
+            self.publish_status(
+                f'Dropped {self.corrupt_frames} corrupt frame(s) '
+                f'(stream resyncs {client.resync_count})')
+            self._last_corrupt_reported = self.corrupt_frames
     
     @staticmethod
     def _f32_array(samples) -> array:
@@ -530,14 +643,18 @@ class TdssDxDriver(Node):
             msg.range_setting = float(data.parameters.range_m)
             msg.sound_velocity_bulk = float(data.parameters.sound_velocity.bulk)
             msg.sound_velocity_face = float(data.parameters.sound_velocity.face)
-            msg.transmit_angle = float(data.parameters.port_transmit.angle)  # Using port, could average both
+            # Using port; could average both
+            msg.transmit_angle = float(data.parameters.port_transmit.angle)
             msg.transmit_power = int(data.parameters.port_transmit.power)
             
             # Range resolutions
-            msg.port_sidescan_range_resolution = float(data.system_info.port_sidescan_range_resolution)
-            msg.port_sidescan3d_range_resolution = float(data.system_info.port_sidescan3d_range_resolution)
-            msg.starboard_sidescan_range_resolution = float(data.system_info.starboard_sidescan_range_resolution)
-            msg.starboard_sidescan3d_range_resolution = float(data.system_info.starboard_sidescan3d_range_resolution)
+            si = data.system_info
+            msg.port_sidescan_range_resolution = float(si.port_sidescan_range_resolution)
+            msg.port_sidescan3d_range_resolution = float(si.port_sidescan3d_range_resolution)
+            msg.starboard_sidescan_range_resolution = float(
+                si.starboard_sidescan_range_resolution)
+            msg.starboard_sidescan3d_range_resolution = float(
+                si.starboard_sidescan3d_range_resolution)
             
             # Bathymetry point clouds (optional; redundant with the
             # sonar/bathymetry topic and costly to rebuild every ping, so off
@@ -548,13 +665,15 @@ class TdssDxDriver(Node):
 
                 if len(port_points) > 0:
                     port_xyz = np.array([p.to_xyz() for p in port_points], dtype=np.float32)
-                    port_amplitudes = np.array([p.amplitude for p in port_points], dtype=np.float32).reshape(-1, 1)
+                    port_amplitudes = np.array(
+                        [p.amplitude for p in port_points], dtype=np.float32).reshape(-1, 1)
                     port_data = np.column_stack([port_xyz, port_amplitudes])
                     msg.port_bathymetry = self.create_pointcloud2(port_data, timestamp)
 
                 if len(stbd_points) > 0:
                     stbd_xyz = np.array([p.to_xyz() for p in stbd_points], dtype=np.float32)
-                    stbd_amplitudes = np.array([p.amplitude for p in stbd_points], dtype=np.float32).reshape(-1, 1)
+                    stbd_amplitudes = np.array(
+                        [p.amplitude for p in stbd_points], dtype=np.float32).reshape(-1, 1)
                     stbd_data = np.column_stack([stbd_xyz, stbd_amplitudes])
                     msg.starboard_bathymetry = self.create_pointcloud2(stbd_data, timestamp)
 
@@ -565,6 +684,7 @@ class TdssDxDriver(Node):
             msg.port_sidescan_samples = self._f32_array(data.get_port_sidescan())
             msg.starboard_sidescan_samples = self._f32_array(
                 data.get_stbd_sidescan())
+            self._check_sidescan_grid(data)
             
             # ASCII data
             msg.ascii_data = data.get_ascii_data()
@@ -579,37 +699,128 @@ class TdssDxDriver(Node):
             import traceback
             self.logger.error(f"Error publishing full ping message: {e}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
-            self.logger.error(f"Data types - ping_number: {type(data.ping_number)}, milliseconds_today: {type(data.milliseconds_today)}, sample_rate_hz: {type(data.sample_rate_hz)}, ping_rate_hz: {type(data.ping_rate_hz)}")
+            self.logger.error(
+                f"Data types - ping_number: {type(data.ping_number)}, "
+                f"milliseconds_today: {type(data.milliseconds_today)}, "
+                f"sample_rate_hz: {type(data.sample_rate_hz)}, "
+                f"ping_rate_hz: {type(data.ping_rate_hz)}")
     
+    def _check_sidescan_grid(self, data: DxData):
+        """Log the i*c/(2fs) sidescan grid every bag consumer relies on.
+
+        The per-sample ranges are not published (fully redundant with
+        sample_rate + sound_velocity_bulk while the head emits every receive
+        sample from range 0). Frames that violate the grid are rejected before
+        reaching here (process_ping / DxData.frame_problems), so this only
+        reports the grid in effect: one info line when it first appears or
+        changes.
+        """
+        n_port = int(data.port_sidescan_count)
+        n_stbd = int(data.starboard_sidescan_count)
+        if n_port < 2 and n_stbd < 2:
+            return
+        spacing = data.sidescan_bin_spacing_m()
+        key = (n_port, n_stbd, round(spacing, 6))
+        if key == self._logged_ss_grid:
+            return
+        self._logged_ss_grid = key
+        span = max(n_port, n_stbd) * spacing
+        self.logger.info(
+            f'Sidescan grid OK: {n_port}/{n_stbd} samples per side, '
+            f'{spacing * 100:.3f} cm/sample = c/(2fs) '
+            f'({data.parameters.sound_velocity.bulk:.1f} m/s, '
+            f'{data.system_info.sample_rate:.0f} Hz), span {span:.1f} m '
+            f'(range setting {data.parameters.range_m:.0f} m)')
+
+    def _log_tilt_once(self, tilt_port: float, tilt_stbd: float):
+        """Report the tilt actually in use, and only when it changes."""
+        key = (round(tilt_port, 4), round(tilt_stbd, 4))
+        if key == self._logged_tilt:
+            return
+        self._logged_tilt = key
+        src = ('sonar-reported' if self.use_reported_transducer_angles
+               else 'parameter')
+        note = ''
+        if abs(tilt_port - tilt_stbd) > 1e-6:
+            note = '  (sides asymmetric)'
+        elif abs(tilt_port - self.transducer_tilt_deg) > 1e-6:
+            note = f'  (parameter was {self.transducer_tilt_deg:+.2f})'
+        self.logger.info(
+            f'Transducer tilt [{src}]: port {tilt_port:+.3f} deg, '
+            f'starboard {tilt_stbd:+.3f} deg{note}')
+
     def publish_bathymetry(self, data: DxData, timestamp: Time):
         """Publish bathymetry point cloud in sonar frame."""
         try:
-            # xyz + intensity in one masked array, so a corrupt point drops
-            # only that point (not the whole ping via a length mismatch).
-            points = data.get_all_bathymetry_xyzi(self.transducer_tilt_deg)
+            # Prefer the mounting angles the sonar reports for each side over
+            # the single hardcoded parameter, which cannot represent an
+            # asymmetric mount. Falls back to the parameter per side.
+            if self.use_reported_transducer_angles:
+                tilt_port, tilt_stbd = data.reported_transducer_tilts(
+                    self.transducer_tilt_deg)
+            else:
+                tilt_port = tilt_stbd = self.transducer_tilt_deg
+            self._log_tilt_once(tilt_port, tilt_stbd)
+
+            # xyz + intensity + quality in one masked array, so a corrupt
+            # point drops only that point (not the whole ping via a length
+            # mismatch). quality = the head's per-point sample count (vendor
+            # reserved1), a confidence measure for downstream cleaning.
+            points = data.get_all_bathymetry_xyziq(tilt_port, tilt_stbd)
 
             if len(points) == 0:
                 return
 
             # Create PointCloud2 in sonar frame
-            cloud_msg = self.create_pointcloud2(points, timestamp, frame_id=self.frame_id)
+            cloud_msg = self.create_pointcloud2(
+                points, timestamp, frame_id=self.frame_id,
+                field_names=('x', 'y', 'z', 'intensity', 'quality'))
             self.pointcloud_pub.publish(cloud_msg)
         
         except Exception as e:
             self.logger.error(f"Error publishing bathymetry: {e}")
-    
-    def create_pointcloud2(self, points: np.ndarray, timestamp: Time, frame_id: str = None) -> PointCloud2:
+
+    def publish_sidescan3d(self, data: DxData, timestamp: Time):
+        """Publish the head's full sidescan-3D point set (x, y, z, intensity, snr).
+
+        Every range step with several angle solutions per range, water column
+        included - the bathymetry cloud is the bottom-tracked subset of this.
+        Same geometry (reported or parameter tilt) and frame as bathymetry.
         """
-        Create PointCloud2 message from Nx4 array (x, y, z, intensity).
-        
+        try:
+            if self.use_reported_transducer_angles:
+                tilt_port, tilt_stbd = data.reported_transducer_tilts(
+                    self.transducer_tilt_deg)
+            else:
+                tilt_port = tilt_stbd = self.transducer_tilt_deg
+            points = data.get_all_sidescan3d_xyzis(tilt_port, tilt_stbd)
+            if len(points) == 0:
+                return
+            self.sidescan3d_pub.publish(self.create_pointcloud2(
+                points, timestamp, frame_id=self.frame_id,
+                field_names=('x', 'y', 'z', 'intensity', 'snr')))
+        except Exception as e:
+            self.logger.error(f"Error publishing sidescan3d: {e}")
+
+    def create_pointcloud2(self, points: np.ndarray, timestamp: Time,
+                           frame_id: str = None,
+                           field_names=('x', 'y', 'z', 'intensity')) -> PointCloud2:
+        """
+        Create PointCloud2 message from an NxK float32 array.
+
         Args:
-            points: Nx4 numpy array
+            points: NxK numpy array; column k is field ``field_names[k]``
             timestamp: ROS timestamp
             frame_id: Frame ID (defaults to self.frame_id)
-        
+            field_names: one FLOAT32 field per column, in order
+
         Returns:
             PointCloud2 message
         """
+        points = np.ascontiguousarray(points, dtype=np.float32)
+        if points.ndim != 2 or points.shape[1] != len(field_names):
+            raise ValueError(
+                f'points shape {points.shape} does not match fields {field_names}')
         msg = PointCloud2()
         msg.header = Header()
         msg.header.stamp = timestamp.to_msg()
@@ -619,20 +830,131 @@ class TdssDxDriver(Node):
         msg.width = len(points)
         
         msg.fields = [
-            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
-            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
-            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
-            PointField(name='intensity', offset=12, datatype=PointField.FLOAT32, count=1),
+            PointField(name=name, offset=4 * i, datatype=PointField.FLOAT32, count=1)
+            for i, name in enumerate(field_names)
         ]
         
         msg.is_bigendian = False
-        msg.point_step = 16  # 4 floats * 4 bytes
+        msg.point_step = 4 * len(field_names)
         msg.row_step = msg.point_step * msg.width
         msg.is_dense = True
         
-        msg.data = points.astype(np.float32).tobytes()
+        msg.data = points.tobytes()
         
         return msg
+
+    # Snapshot keys that change every ping and must not trigger a republish.
+    _SETTINGS_VOLATILE = ('sound_velocity_face',)
+
+    def _publish_settings(self, data: DxData, timestamp: Time):
+        """Publish SonarSettings when any setting differs from the last one sent.
+
+        Latched QoS, so a single message per change is enough for late
+        subscribers and bag recorders. The live SV probe (sound_velocity_face)
+        is carried but excluded from the change test.
+        """
+        snap = data.settings_snapshot()
+        key = tuple(v for k, v in snap.items() if k not in self._SETTINGS_VOLATILE)
+        if key == self._settings_key:
+            return
+        self._settings_key = key
+        msg = SonarSettings()
+        msg.header = Header()
+        msg.header.stamp = timestamp.to_msg()
+        msg.header.frame_id = self.frame_id
+        msg.ping_number = int(data.ping_id)
+        for k, v in snap.items():
+            setattr(msg, k, v)
+        self.settings_pub.publish(msg)
+        self.logger.info(
+            f"Sonar settings (ping {data.ping_id}): range {snap['range']:.0f} m, "
+            f"tx {snap['port_transmit_pulse']} {snap['port_transmit_beamwidth']} "
+            f"{snap['port_transmit_power']}% @{snap['port_transmit_angle']:+.0f} deg, "
+            f"TVG {snap['port_gain_constant']:g}+{snap['port_gain_linear']:g}R"
+            f"+{snap['port_gain_logarithmic']:g}log10R dB, "
+            f"{snap['trigger_source']} duty {snap['trigger_continuous_duty_cycle']:g}, "
+            f"c_bulk {snap['sound_velocity_bulk']:.1f}")
+
+    def _publish_telemetry(self, data: DxData, timestamp: Time):
+        """Head telemetry from the proprietary / status sentences in this ping.
+
+        $PDNDE -> sonar/altitude, $PDSVM -> sonar/water_temperature (+ diag),
+        $PDHXT -> sonar/mcu_temperature (+ diag), $PDHXP -> diag key/values.
+        ($GPGST is consumed in update_position_from_data, before the fix.)
+        """
+        ascii_data = data.get_ascii_data()
+        if not ascii_data:
+            return
+        stamp = timestamp.to_msg()
+        diag_values = []
+        diag_level = DiagnosticStatus.OK
+        for sentence in ascii_data.split('\n'):
+            sentence = sentence.strip()
+            if sentence.startswith('$PDNDE'):
+                r = nav_parsers.parse_pdnde(sentence)
+                if r is None:
+                    continue
+                nadir, f2, f3, f4 = r
+                alt = SonarAltitude()
+                alt.header = Header()
+                alt.header.stamp = stamp
+                alt.header.frame_id = self.frame_id
+                alt.ping_number = int(data.ping_id)
+                alt.nadir_depth = float(nadir)
+                alt.altitude = float(-nadir)
+                alt.field2 = float(f2)
+                alt.field3 = int(f3)
+                alt.field4 = int(f4)
+                self.altitude_pub.publish(alt)
+            elif sentence.startswith('$PDSVM'):
+                r = nav_parsers.parse_pdsvm(sentence)
+                if r is None:
+                    continue
+                sv, temp_c, make, serial = r
+                t = Temperature()
+                t.header = Header()
+                t.header.stamp = stamp
+                t.header.frame_id = self.frame_id
+                t.temperature = float(temp_c)
+                t.variance = 0.0
+                self.water_temp_pub.publish(t)
+                diag_values.append(KeyValue(key='sv_probe_m_s', value=f'{sv:.3f}'))
+                diag_values.append(KeyValue(key='water_temperature_c', value=f'{temp_c:.2f}'))
+                if make or serial:
+                    diag_values.append(KeyValue(key='sv_probe', value=f'{make} {serial}'.strip()))
+            elif sentence.startswith('$PDHXT'):
+                r = nav_parsers.parse_pdhxt(sentence)
+                if r is None:
+                    continue
+                sensor, temp_c = r
+                t = Temperature()
+                t.header = Header()
+                t.header.stamp = stamp
+                t.header.frame_id = self.frame_id
+                t.temperature = float(temp_c)
+                t.variance = 0.0
+                self.mcu_temp_pub.publish(t)
+                diag_values.append(KeyValue(key=f'{sensor.lower()}_temperature_c',
+                                            value=f'{temp_c:.0f}'))
+            elif sentence.startswith('$PDHXP'):
+                r = nav_parsers.parse_pdhxp(sentence)
+                if r is None:
+                    continue
+                rail, vals = r
+                diag_values.append(KeyValue(
+                    key=f'rail_{rail}', value=' '.join(str(v) for v in vals)))
+        if diag_values and self.diag_pub.get_subscription_count() > 0:
+            st = DiagnosticStatus()
+            st.level = diag_level
+            st.name = f'3dss_dx/{data.system_info.sonar_id or "sonar"}'
+            st.message = 'head telemetry'
+            st.hardware_id = data.system_info.sonar_id
+            st.values = diag_values
+            arr = DiagnosticArray()
+            arr.header = Header()
+            arr.header.stamp = stamp
+            arr.status = [st]
+            self.diag_pub.publish(arr)
     
     def transform_points_to_odom(self, points_sonar: np.ndarray) -> np.ndarray:
         """
@@ -652,12 +974,18 @@ class TdssDxDriver(Node):
             return points_sonar
         
         # Check for NaN in pose data
-        if not np.isfinite(self.current_roll) or not np.isfinite(self.current_pitch) or not np.isfinite(self.current_yaw):
-            self.get_logger().error(f'Invalid orientation: roll={self.current_roll}, pitch={self.current_pitch}, yaw={self.current_yaw}')
+        if not (np.isfinite(self.current_roll) and np.isfinite(self.current_pitch)
+                and np.isfinite(self.current_yaw)):
+            self.get_logger().error(
+                f'Invalid orientation: roll={self.current_roll}, '
+                f'pitch={self.current_pitch}, yaw={self.current_yaw}')
             return np.full_like(points_sonar, np.nan)
         
-        if not np.isfinite(self.current_x) or not np.isfinite(self.current_y) or not np.isfinite(self.current_z):
-            self.get_logger().error(f'Invalid position: x={self.current_x}, y={self.current_y}, z={self.current_z}')
+        if not (np.isfinite(self.current_x) and np.isfinite(self.current_y)
+                and np.isfinite(self.current_z)):
+            self.get_logger().error(
+                f'Invalid position: x={self.current_x}, y={self.current_y}, '
+                f'z={self.current_z}')
             return np.full_like(points_sonar, np.nan)
         
         # Create rotation matrices for roll, pitch, yaw (ZYX convention)
@@ -723,7 +1051,14 @@ class TdssDxDriver(Node):
         if self.ping_count <= 3:
             self.logger.info(f"Ping {self.ping_count} ASCII data: {repr(ascii_data[:200])}")
         
-        # Parse each sentence
+        # Parse each sentence. $GPGST first so the fix published from $GPGGA
+        # in the same block already carries this ping's covariance.
+        for sentence in ascii_data.split('\n'):
+            sentence = sentence.strip()
+            if sentence.startswith('$GPGST') or sentence.startswith('$GNGST'):
+                sd = nav_parsers.parse_gpgst(sentence)
+                if sd is not None:
+                    self._gnss_sd = sd
         vnycm_found = False
         heading_found = False
         for sentence in ascii_data.split('\n'):
@@ -757,14 +1092,17 @@ class TdssDxDriver(Node):
             if heading_found:
                 self.logger.info(f"Heading: {np.rad2deg(self.current_yaw):.1f}°")
             else:
-                self.logger.warning(f"No heading data found in ping {self.ping_count}. Current yaw: {np.rad2deg(self.current_yaw):.1f}°")
+                self.logger.warning(
+                    f"No heading data found in ping {self.ping_count}. "
+                    f"Current yaw: {np.rad2deg(self.current_yaw):.1f}°")
         
         # If this is the first ping, set odom origin
         if not self.odom_origin_set:
             self.odom_origin_set = True
             self.odom_origin_x = self.current_x
             self.odom_origin_y = self.current_y
-            self.logger.info(f"Odom origin set at ({self.odom_origin_x:.2f}, {self.odom_origin_y:.2f})")
+            self.logger.info(
+                f"Odom origin set at ({self.odom_origin_x:.2f}, {self.odom_origin_y:.2f})")
     
     def _parse_vnycm(self, sentence: str):
         """
@@ -850,7 +1188,17 @@ class TdssDxDriver(Node):
         fix.latitude = float(self.latitude)
         fix.longitude = float(self.longitude)
         fix.altitude = float(self.altitude)
-        fix.position_covariance_type = NavSatFix.COVARIANCE_TYPE_UNKNOWN
+        if self._gnss_sd is not None:
+            # $GPGST gives 1-sigma lat/lon/alt in metres; NavSatFix wants an
+            # ENU covariance (east, north, up) -> lon_sd, lat_sd, alt_sd.
+            lat_sd, lon_sd, alt_sd = self._gnss_sd
+            fix.position_covariance = [
+                lon_sd ** 2, 0.0, 0.0,
+                0.0, lat_sd ** 2, 0.0,
+                0.0, 0.0, alt_sd ** 2]
+            fix.position_covariance_type = NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
+        else:
+            fix.position_covariance_type = NavSatFix.COVARIANCE_TYPE_UNKNOWN
         self.navsat_pub.publish(fix)
     
     def _parse_gphdt(self, sentence: str):
@@ -956,8 +1304,10 @@ class TdssDxDriver(Node):
         
         # Debug: log first few TF publishes
         if self.ping_count <= 3:
-            self.logger.info(f"Published TF: pos=({t.transform.translation.x:.2f}, {t.transform.translation.y:.2f}, {t.transform.translation.z:.2f}) "
-                           f"quat=({t.transform.rotation.x:.3f}, {t.transform.rotation.y:.3f}, {t.transform.rotation.z:.3f}, {t.transform.rotation.w:.3f})")
+            tr, q = t.transform.translation, t.transform.rotation
+            self.logger.info(
+                f"Published TF: pos=({tr.x:.2f}, {tr.y:.2f}, {tr.z:.2f}) "
+                f"quat=({q.x:.3f}, {q.y:.3f}, {q.z:.3f}, {q.w:.3f})")
     
     def publish_vehicle_position(self, timestamp: Time):
         """

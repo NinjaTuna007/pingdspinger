@@ -13,8 +13,15 @@
     odom_frame_id: 'odom'
     map_frame_id: 'map'
     
-    # Sonar geometry
+    # Sonar geometry.
+    # transducer_tilt_deg is only a FALLBACK: by default the driver uses the
+    # per-side mounting angles the sonar reports (positive = downward there,
+    # negated into this file's negative = downward convention). The Orebro head
+    # reports 20.0 deg on both sides, matching -20.0 here.
+    # NOTE: the sonar->vehicle roll alignment is NOT set here; it lives in the
+    # static base_link->sonar mount (sonar_roll in pingdsp_sbg/launch/sbg.launch).
     transducer_tilt_deg: -20.0  # Downward tilt angle of transducer
+    use_reported_transducer_angles: true
     
     # NOTE: the sidescan waterfall *image* is no longer produced by this driver.
     # Run `sidescan_viewer_node` to render it on demand from the raw Ping3DSS

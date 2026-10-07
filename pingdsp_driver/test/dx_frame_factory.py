@@ -57,31 +57,47 @@ def _build_system_info(sonar_id='TEST-3DSS', sample_rate=50000.0,
 def build_dx_data(ping_id=1, ascii_sentences=None,
                   port_sidescan=None, starboard_sidescan=None,
                   port_bathy=None, starboard_bathy=None,
-                  sample_rate=50000.0, ping_rate=10.0, range_m=50.0):
+                  port_sidescan3d=None, starboard_sidescan3d=None,
+                  sample_rate=50000.0, ping_rate=10.0, range_m=50.0,
+                  port_angle=-30.0, stbd_angle=30.0, sv_bulk=1500.0,
+                  sidescan_step_m=None, sidescan_start_m=0.0):
     """Build the DxData blob (872-byte header + variable sections).
 
     Args:
         ascii_sentences: list[str] NMEA/TSS1 sentences.
         port_sidescan / starboard_sidescan: list[float] amplitudes.
-        port_bathy / starboard_bathy: list[(range_m, angle_rad, amplitude)].
+        port_bathy / starboard_bathy: list of (range_m, angle_rad, amplitude)
+            or (range_m, angle_rad, amplitude, count) - ``count`` is the
+            uint32 the head writes into ``reserved1`` (default 0).
+        port_sidescan3d / starboard_sidescan3d: list of
+            (range_m, angle_rad, amplitude, snr_db) Sidescan3DPoints.
+        sidescan_step_m: per-sample range step written into each
+            SidescanPoint. Default mimics the real head: sv_bulk/(2*sample_rate).
+        sidescan_start_m: range of the first sidescan sample (head uses 0).
 
     Returns:
         bytes (the DxData payload, i.e. what follows the DxHeader).
     """
+    if sidescan_step_m is None:
+        sidescan_step_m = (sv_bulk / (2.0 * sample_rate)
+                           if sample_rate > 0 else 0.0)
     ascii_sentences = ascii_sentences or []
     port_sidescan = port_sidescan or []
     starboard_sidescan = starboard_sidescan or []
     port_bathy = port_bathy or []
     starboard_bathy = starboard_bathy or []
+    port_sidescan3d = port_sidescan3d or []
+    starboard_sidescan3d = starboard_sidescan3d or []
 
     header = bytearray(_HEADER_SIZE)
     struct.pack_into('<Q', header, 0, ping_id)
     # time @8, time_range_zero @24 (Timestamp: Q seconds, I ns, I flags).
     struct.pack_into('<QII', header, 8, 1_700_000_000, 0, 0)
     struct.pack_into('<QII', header, 24, 1_700_000_000, 0, 0)
-    header[40:40 + 576] = _build_parameters(range_m=range_m)
+    header[40:40 + 576] = _build_parameters(range_m=range_m, sv_bulk=sv_bulk)
     header[616:616 + 128] = _build_system_info(
-        sample_rate=sample_rate, ping_rate=ping_rate)
+        sample_rate=sample_rate, ping_rate=ping_rate,
+        port_angle=port_angle, stbd_angle=stbd_angle)
 
     # Variable sections appended after the fixed header.
     body = bytearray()
@@ -104,18 +120,33 @@ def build_dx_data(ping_id=1, ascii_sentences=None,
 
     def _ss_blob(samples):
         blob = bytearray()
-        for amp in samples:
-            blob.extend(struct.pack('<ff', 0.0, float(amp)))
+        for i, amp in enumerate(samples):
+            rng = sidescan_start_m + i * sidescan_step_m
+            blob.extend(struct.pack('<ff', float(rng), float(amp)))
         return blob
 
     port_ss_off = _section(_ss_blob(port_sidescan)) if port_sidescan else 0
     stbd_ss_off = (_section(_ss_blob(starboard_sidescan))
                    if starboard_sidescan else 0)
 
+    def _ss3d_blob(points):
+        blob = bytearray()
+        for rng, ang, amp, snr in points:
+            blob.extend(struct.pack('<4f', rng, ang, amp, snr))
+        return blob
+
+    port_ss3d_off = (_section(_ss3d_blob(port_sidescan3d))
+                     if port_sidescan3d else 0)
+    stbd_ss3d_off = (_section(_ss3d_blob(starboard_sidescan3d))
+                     if starboard_sidescan3d else 0)
+
     def _bathy_blob(points):
         blob = bytearray()
-        for rng, ang, amp in points:
-            blob.extend(struct.pack('<5f', rng, ang, amp, 0.0, 0.0))
+        for pt in points:
+            rng, ang, amp = pt[:3]
+            count = int(pt[3]) if len(pt) > 3 else 0
+            # reserved1 is a uint32 in a float slot on the real head.
+            blob.extend(struct.pack('<fffIf', rng, ang, amp, count, 0.0))
         return blob
 
     port_bathy_off = _section(_bathy_blob(port_bathy)) if port_bathy else 0
@@ -126,8 +157,8 @@ def build_dx_data(ping_id=1, ascii_sentences=None,
         ascii_off, len(ascii_sentences),
         port_ss_off, len(port_sidescan),
         stbd_ss_off, len(starboard_sidescan),
-        0, 0,  # port/stbd sidescan3d
-        0, 0,
+        port_ss3d_off, len(port_sidescan3d),
+        stbd_ss3d_off, len(starboard_sidescan3d),
         port_bathy_off, len(port_bathy),
         stbd_bathy_off, len(starboard_bathy),
         0, 0,  # recorded filename/version offsets

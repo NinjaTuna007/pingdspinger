@@ -97,14 +97,15 @@ How the captures were recorded is documented in the project
      │  /sonar/ping     /sonar/set_range          initializer        │
      │   (Ping3DSS)     /sonar/set_gain               │ static TF     │ publishes:
      │  /sonar/bathymetry  /sonar/set_power      utm_{z}_{b}→utm   /pingdsp/odom
-     │   (PointCloud2)  /sonar/set_sound_velocity   →pingdsp/odom    (Odometry)
-     │  /sonar/pose     /sonar/get_settings                          + dynamic TF
-     │  /sonar/nmea     /sonar/set_trigger_mode                      pingdsp/odom→
-     │  /sonar/status                                                 pingdsp/base_link
-     │                                                               + /pingdsp/heading
-     ▼                                                                 /pingdsp/course
- sidescan_viewer_node (subscribes /sonar/ping)                        /pingdsp/speed
-     │  publishes /sonar/sidescan_image (Image, on demand)            /pingdsp/latlon
+     │  /sonar/sidescan3d  /sonar/set_sound_velocity →pingdsp/odom   (Odometry)
+     │   (PointCloud2)  /sonar/get_settings                          + dynamic TF
+     │  /sonar/settings /sonar/set_trigger_mode                      pingdsp/odom→
+     │  /sonar/altitude                                               pingdsp/base_link
+     │  /sonar/pose  /sonar/nmea  /sonar/fix                         + /pingdsp/heading
+     │  /sonar/status  /sonar/*_temperature  /diagnostics              /pingdsp/course
+     ▼                                                                 /pingdsp/speed
+ sidescan_viewer_node (subscribes /sonar/ping)                        /pingdsp/latlon
+     │  publishes /sonar/sidescan_image (Image, on demand)
      ▼
  Foxglove / rviz2 / rosbag
 ```
@@ -112,6 +113,36 @@ How the captures were recorded is documented in the project
 Note: `tdss_driver` no longer publishes a rendered sonar image. Visualisation is
 fully decoupled into `sidescan_viewer_node` so bags stay small (see
 [`SIDESCAN_VIEWER.md`](SIDESCAN_VIEWER.md)).
+
+### `tdss_driver` topics
+
+| Topic | Type | Content |
+|---|---|---|
+| `sonar/ping` | `pingdsp_msg/Ping3DSS` | Raw port/starboard sidescan amplitudes + per-ping metadata. Bin spacing is `sound_velocity_bulk / (2 · sample_rate)`. |
+| `sonar/bathymetry` | `sensor_msgs/PointCloud2` `x y z intensity quality` | The head's bottom-tracked bathymetry in the `sonar` frame. `quality` is the head's per-point sample count (vendor `reserved1`, uint32 1–200ish; higher = more 3D samples binned into the point). Published only while subscribed. |
+| `sonar/sidescan3d` | `sensor_msgs/PointCloud2` `x y z intensity snr` | The full sidescan-3D point set the head computes: every range step, up to `sidescan3d_number_of_angles` angle solutions per range, water column included, with per-point SNR in dB. `sonar/bathymetry` is its bottom-tracked, binned subset. ~10× more points than bathymetry at long range (~4300/ping at 150 m, ~86 KB/ping). Published only while subscribed; `publish_sidescan3d:=false` removes the publisher. |
+| `sonar/settings` | `pingdsp_msg/SonarSettings` (latched) | Every DxParameters/DxSystemInfo value in effect: range, sample rate, bin spacing, TVG gain polynomial, pulse / beamwidth / power / transmit angle per side, trigger, 2D/3D processing settings, sound velocity. Transient-local, depth 1, re-sent only when a setting changes, so a bag started mid-run still records it. |
+| `sonar/altitude` | `pingdsp_msg/SonarAltitude` | The head's own nadir depth from its internal `$PDNDE` sentence (`altitude = -nadir_depth`), one per ping. |
+| `sonar/water_temperature` | `sensor_msgs/Temperature` | From the AML SV probe (`$PDSVM`), ~every other ping. |
+| `sonar/mcu_temperature` | `sensor_msgs/Temperature` | Head MCU temperature (`$PDHXT`). |
+| `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | `3dss_dx/<sonar_id>` status with SV probe, temperatures and `$PDHXP` power-rail readings as key/values. Published only while subscribed. |
+| `sonar/fix` | `sensor_msgs/NavSatFix` | GGA fix from the sonar stream. When `$GPGST` is present the `position_covariance` is `DIAGONAL_KNOWN` with east/north/up variances from the GST sigmas. |
+| `sonar/pose`, `vehicle/position`, `vehicle/path` | geometry/nav msgs | Nav derived from the embedded NMEA/TSS1 (standalone mode). |
+| `sonar/nmea` | `std_msgs/String` | Raw ASCII block of each ping. |
+| `sonar/status`, `sonar/delivery_latency`, `sonar/rx_backlog_bytes` | String / Float32 / Int32 | Connection and stream-health telemetry. `sonar/status` also reports dropped corrupt frames. |
+
+Every data topic is published while at least one subscriber exists; `ros2 bag record -a`
+(what `record_bag:=true` runs) is such a subscriber, so a bag captures all of the above,
+including the latched `sonar/settings` (verified by `test_bag_record_all_captures_every_driver_topic`).
+
+**Frame integrity.** Before anything is published, `DxData.frame_problems()` rejects frames
+whose body contains another frame's preamble (upstream byte loss splices the next frame in at
+the advertised length), whose sidescan grid is not `i·c/(2fs)`, or whose point sections carry
+non-finite values, ranges outside 1.5× the range setting, angles beyond ±π, or garbage quality
+counts. Such frames are dropped whole (throttled warning, count in `sonar/status`). On a live
+TCP link this never fires (TCP is lossless; a 35 min Örebro survey had 0 corrupt frames and 0
+garbage points); it matters for pcap replay of captures with tcpdump loss, where ~1 % of frames
+are spliced.
 
 ## TF tree
 
@@ -148,7 +179,10 @@ tree from the NMEA/TSS1 nav embedded in the sonar stream.
 
 ```
 Sonar TCP ─► tdss_driver ─► /sonar/ping ─► sidescan_viewer_node ─► /sonar/sidescan_image
-                          └► /sonar/bathymetry, /sonar/pose, /sonar/nmea, /sonar/status
+                          ├► /sonar/bathymetry ─► pointcloud_filter ─► /sonar/bathymetry_filtered
+                          ├► /sonar/sidescan3d, /sonar/settings (latched), /sonar/altitude
+                          └► /sonar/pose, /sonar/fix, /sonar/nmea, /sonar/status,
+                             /sonar/{water,mcu}_temperature, /diagnostics
 
 SBG UDP ─► sbg_device ─► /pingdsp/sbg/{ekf_nav, ekf_euler, imu_short, ...}
               ├► sbg_to_odom_initializer ─► static TF datum
