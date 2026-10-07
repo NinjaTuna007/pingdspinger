@@ -39,7 +39,16 @@
     <arg name="sonar_x" default="0.0"/>
     <arg name="sonar_y" default="0.0"/>
     <arg name="sonar_z" default="0.0"/>
-    <arg name="sonar_roll" default="0.0"/>
+    <!-- Mount angles are RADIANS (tf2_ros static_transform_publisher).
+         sonar_roll is a measured calibration, not a nominal zero: the housing
+         sits slightly rolled relative to the SBG/vehicle frame, which tilts the
+         swath and makes overlapping lines disagree. +0.40 deg = 0.006981 rad
+         was solved from the Orebro 2026-07-08 survey by sweeping roll to
+         minimise cross-pass depth disagreement (0.421 -> 0.137 m median) after
+         sound-velocity correction; the residual odd/antisymmetric error across
+         the swath drops to ~0.003 deg. Re-run that sweep if the head is
+         re-mounted. See journal/memory/sound-velocity-svp.md. -->
+    <arg name="sonar_roll" default="0.006981"/>
     <arg name="sonar_pitch" default="0.0"/>
     <arg name="sonar_yaw" default="0.0"/>
 
