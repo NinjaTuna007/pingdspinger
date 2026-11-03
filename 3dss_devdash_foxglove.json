@@ -138,12 +138,18 @@
       "maxNativeZoom": 18,
       "topicConfig": {
         "/pingdsp/fix": {
-          "historyMode": "none",
-          "pointSize": 6
+          "historyMode": "last-n-seconds",
+          "timeWindowSeconds": 120,
+          "pointDisplayMode": "dot",
+          "pointSize": 6,
+          "showHeading": false
         },
         "/sonar/fix": {
-          "historyMode": "none",
-          "pointSize": 6
+          "historyMode": "last-n-seconds",
+          "timeWindowSeconds": 120,
+          "pointDisplayMode": "dot",
+          "pointSize": 6,
+          "showHeading": false
         }
       },
       "layers": []
