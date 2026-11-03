@@ -37,6 +37,7 @@ class DxHeader:
     Note: The original API incorrectly documented 3 reserved uint32 fields.
     Actual structure is 16-byte preamble + 4-byte data_count = 20 bytes total.
     """
+
     preamble: bytes        # uint8_t[16] - Should match DX_PREAMBLE
     data_count: int        # uint32_t - Length of DxData to follow in bytes
     
@@ -64,6 +65,7 @@ class DxHeader:
 @dataclass
 class Timestamp:
     """16-byte timestamp structure."""
+
     seconds: int       # uint64_t - seconds since epoch
     nanoseconds: int   # uint32_t - nanosecond remainder
     flags: int         # uint32_t - status flags
@@ -83,6 +85,7 @@ class Timestamp:
 @dataclass
 class SoundVelocity:
     """8-byte sound velocity structure."""
+
     bulk: float  # Bulk water column velocity (m/s)
     face: float  # Face velocity at transducer (m/s)
     
@@ -101,6 +104,7 @@ class SoundVelocity:
 @dataclass
 class Gain:
     """12-byte gain structure."""
+
     constant: float     # Constant gain (dB)
     linear: float       # Linear gain (dB/m)
     logarithmic: float  # Logarithmic gain (dB/log10(m))
@@ -120,6 +124,7 @@ class Gain:
 @dataclass
 class SidescanSettings:
     """128-byte sidescan settings structure."""
+
     mode: str                  # 32 bytes - mode name
     incoherent_method: str     # 32 bytes - incoherent method
     coherent_beams: str        # 64 bytes - beam list
@@ -142,6 +147,7 @@ class SidescanSettings:
 @dataclass
 class Sidescan3DSettings:
     """16-byte sidescan 3D settings structure."""
+
     smoothing: int       # Number of samples for smoothing
     tolerance: float     # Tolerance for non-plane wave arrivals
     threshold: float     # Signal level threshold (dB re FS)
@@ -163,6 +169,7 @@ class Sidescan3DSettings:
 @dataclass
 class TransmitSettings:
     """72-byte transmit settings structure."""
+
     angle: float        # Transmit beam angle (degrees)
     power: int          # Transmit power (percentage)
     beamwidth: str      # 32 bytes - beamwidth name
@@ -186,6 +193,7 @@ class TransmitSettings:
 @dataclass
 class TriggerSettings:
     """40-byte trigger settings structure."""
+
     source: str                    # 32 bytes - trigger source name
     continuous_duty_cycle: float   # Duty cycle for continuous mode
     reserved: float                # Reserved (likely ping rate)
@@ -207,6 +215,7 @@ class TriggerSettings:
 @dataclass
 class DxParameters:
     """576-byte sonar parameters structure."""
+
     range_m: float
     trigger: TriggerSettings
     sound_velocity: SoundVelocity
@@ -298,6 +307,7 @@ class DxParameters:
 @dataclass
 class DxSystemInfo:
     """128-byte system info structure."""
+
     sonar_id: str                          # 32 bytes
     acoustic_frequency: float              # Hz
     sample_rate: float                     # Hz
@@ -345,6 +355,7 @@ class BathymetryPoint:
     Generated from bottom-tracked and binned sidescan-3D data.
     Range and angle define position in polar coordinates.
     """
+
     range_m: float         # Range in meters
     angle_rad: float       # Angle in radians (downward angles are negative)
     amplitude: float       # Amplitude/intensity value
@@ -431,6 +442,7 @@ class SidescanPoint3D:
     range, water column included). The BathymetryPoint section is the
     bottom-tracked, binned subset of these.
     """
+
     range_m: float     # meters
     angle_rad: float   # radians, negative = downward from MRA
     amplitude: float   # after gain + 3D processing
