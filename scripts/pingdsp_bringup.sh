@@ -1,14 +1,19 @@
 #!/bin/bash
 # PingDSP 3DSS-DX bringup (sim or real).
 #
-# Opens a tmux session with three windows:
-#   1. sonar : 3DSS-DX driver (3dss.launch). MODE=real connects to the live
-#              sonar over TCP; MODE=sim points the driver at the local replayer
-#              and runs the pcap replay in the second pane.
-#   2. viz   : Foxglove bridge + 3DSS-DX control GUI. The GUI's "Sidescan" tab
-#              renders the live waterfall in-app and exposes every visualisation knob as a slider.
-#   3. sbg   : SBG driver + odom initializer + sbg_to_odom (sbg.launch). Same in
-#              both modes -- in sim the driver simply ingests the replayed UDP.
+# Opens a tmux session with the sonar, viz, and SBG windows, plus a level-1
+# WARA-PS sensor agent (no task execution) when ENABLE_WARAPS is on:
+#   1. sonar  : 3DSS-DX driver (3dss.launch). MODE=real connects to the live
+#               sonar over TCP; MODE=sim points the driver at the local replayer
+#               and runs the pcap replay in the second pane.
+#   2. viz    : Foxglove bridge + 3DSS-DX control GUI. The GUI's "Sidescan" tab
+#               renders the live waterfall in-app and exposes every visualisation knob as a slider.
+#   3. sbg    : SBG driver + odom initializer + sbg_to_odom (sbg.launch). Same in
+#               both modes -- in sim the driver simply ingests the replayed UDP.
+#   4. waraps : smarc_relay + wasp_mqtt_agent (heartbeat, sensor_info, position).
+#   5. mqtt   : str_json_mqtt_bridge onto the WARA-PS broker.
+# Windows 4 and 5 are skipped in sim unless ENABLE_WARAPS=true, and then the
+# agent is published as simulation so a pcap replay is not a live unit.
 #
 # Each window splits into two panes: the left pane runs the stack, the right
 # pane runs the replayer (sonar window, sim) or tails a useful topic.
@@ -46,6 +51,7 @@ WS_DIR="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 # --- Mode & session --------------------------------------------------------
 MODE="${MODE:-real}"              # real = live hardware | sim = replay a pcap
 SESSION="${SESSION:-pingdsp}"     # tmux session name
+ROBOT_NAME="${ROBOT_NAME:-pingdsp}"  # ROS namespace and TF frame prefix
 
 # --- Live hardware (MODE=real) ---------------------------------------------
 SONAR_HOST="${SONAR_HOST:-}"      # sonar TCP host; empty = 3dss.launch default (192.168.228.50)
@@ -79,6 +85,16 @@ REQUIRE_NAV_FIX="${REQUIRE_NAV_FIX:-auto}"   # true | false | auto (auto: false 
 USE_ALTITUDE="${USE_ALTITUDE:-true}"
 ROS_SETUP="${ROS_SETUP:-}"                   # extra setup.bash to source (optional)
 
+# --- WARA-PS sensor agent (level 1 only; no task execution) ----------------
+# Real mode publishes the rig as a live surface agent. Sim stays off unless
+# ENABLE_WARAPS=true, and then uses realsim=simulation.
+CONTEXT="${CONTEXT:-tuper}"
+DOMAIN="${DOMAIN:-surface}"
+AGENT_TYPE="${AGENT_TYPE:-surface}"
+PULSE_RATE="${PULSE_RATE:-1.0}"
+BROKER_ADDR="${BROKER_ADDR:-${MQTT_BROKER_ADDR:-20.240.40.232}}"
+BROKER_PORT="${BROKER_PORT:-${MQTT_BROKER_PORT:-1884}}"
+
 # ============================================================================
 # End of user config.
 # ============================================================================
@@ -88,6 +104,21 @@ REPLAYER="$SCRIPT_DIR/replay_pingdsp_pcap.py"
 if [[ "$MODE" != "sim" && "$MODE" != "real" ]]; then
     echo "MODE must be 'sim' or 'real' (got '$MODE')." >&2
     exit 1
+fi
+
+# Level-1 WARA-PS agent. Off during pcap replay unless asked, so a laptop
+# replay does not show up as a live unit on the fleet broker.
+if [[ -z "${ENABLE_WARAPS:-}" ]]; then
+    if [[ "$MODE" == "sim" ]]; then
+        ENABLE_WARAPS="false"
+    else
+        ENABLE_WARAPS="true"
+    fi
+fi
+if [[ "$MODE" == "sim" ]]; then
+    REALSIM="simulation"
+else
+    REALSIM="real"
 fi
 
 # SBG is on by default in both modes: in sim the real sbg_device ingests the
@@ -176,7 +207,8 @@ if [[ "$REQUIRE_NAV_FIX" == "auto" ]]; then
         REQUIRE_NAV_FIX="true"
     fi
 fi
-SBG_CMD="ros2 launch pingdsp_sbg sbg.launch require_nav_solution:=$REQUIRE_NAV_FIX use_altitude:=$USE_ALTITUDE"
+NS_ARG="namespace:=$ROBOT_NAME"
+SBG_CMD="ros2 launch pingdsp_sbg sbg.launch $NS_ARG require_nav_solution:=$REQUIRE_NAV_FIX use_altitude:=$USE_ALTITUDE"
 
 # --- Window 1 (sonar) commands, per MODE ---
 REPLAY_CMD=""
@@ -186,8 +218,8 @@ if [[ "$MODE" == "real" ]]; then
     if [[ -n "$SONAR_HOST" ]]; then
         SONAR_ARGS="sonar_host:=$SONAR_HOST"
     fi
-    SONAR_CMD="ros2 launch pingdsp_driver 3dss.launch enable_control:=true record_bag:=$ENABLE_BAG bag_split_duration:=$BAG_SPLIT_SEC $RECORDER_ARGS $SONAR_TF_ARGS $SONAR_ARGS"
-    SONAR_STATUS_CMD="sleep 3; ros2 topic echo /pingdsp/sonar/status std_msgs/msg/String --field data"
+    SONAR_CMD="ros2 launch pingdsp_driver 3dss.launch $NS_ARG enable_control:=true record_bag:=$ENABLE_BAG bag_split_duration:=$BAG_SPLIT_SEC $RECORDER_ARGS $SONAR_TF_ARGS $SONAR_ARGS"
+    SONAR_STATUS_CMD="sleep 3; ros2 topic echo /$ROBOT_NAME/sonar/status std_msgs/msg/String --field data"
 else
     # Sim: run the REAL driver against a local TCP server fed from the pcap.
     # No control channel exists in a replay, so the control GUI stays off.
@@ -197,7 +229,7 @@ else
     # time - correct, but far from wall-now - so widen the skew guard to keep
     # using it. Combined with SBG time_reference:=ins_unix (both on GNSS/UNIX
     # time), the cloud stays registered independent of per-path latency.
-    SONAR_CMD="sleep 4; ros2 launch pingdsp_driver 3dss.launch enable_control:=false sonar_host:=127.0.0.1 sonar_port:=$SIM_TCP_PORT sonar_time_max_skew:=1000000000000.0 record_bag:=$ENABLE_BAG bag_split_duration:=$BAG_SPLIT_SEC $RECORDER_ARGS $SONAR_TF_ARGS"
+    SONAR_CMD="sleep 4; ros2 launch pingdsp_driver 3dss.launch $NS_ARG enable_control:=false sonar_host:=127.0.0.1 sonar_port:=$SIM_TCP_PORT sonar_time_max_skew:=1000000000000.0 record_bag:=$ENABLE_BAG bag_split_duration:=$BAG_SPLIT_SEC $RECORDER_ARGS $SONAR_TF_ARGS"
     # Second pane: the unified replayer (sonar TCP + SBG UDP on one clock). It
     # binds the TCP server immediately, then waits for the driver to connect
     # before starting the shared clock (so sonar + SBG stay aligned).
@@ -212,13 +244,21 @@ FOXGLOVE_CMD="ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=$FOXG
 # viewer node here additionally publishes a small, low-rate sonar/sidescan_image
 # (so it can be seen in Foxglove and recorded) without bloating the bag.
 # The GUI + viewer live under the same namespace as the sonar driver stack
-# (/pingdsp) so their relative topics/services resolve to /pingdsp/sonar/*.
-GUI_CMD="PINGDSP_NS=pingdsp python3 '$PKG_DIR/gui/sonar_control_gui.py'"
-VIEWER_CMD="ros2 run pingdsp_driver sidescan_viewer_node --ros-args -r __ns:=/pingdsp"
+# so their relative topics/services resolve to /<robot>/sonar/*.
+GUI_CMD="PINGDSP_NS=$ROBOT_NAME python3 '$PKG_DIR/gui/sonar_control_gui.py'"
+VIEWER_CMD="ros2 run pingdsp_driver sidescan_viewer_node --ros-args -r __ns:=/$ROBOT_NAME"
 # Bridges Foxglove/RViz '/clicked_point' to a geo-referenced NavSatFix.
-CLICKED_CMD="ros2 run pingdsp_driver clicked_point_to_navsat"
+# Fix anchors follow ROBOT_NAME (defaults stay /pingdsp/fix and /pingdsp/sonar/fix).
+CLICKED_CMD="ros2 run pingdsp_driver clicked_point_to_navsat --ros-args -p fix_topics:=\"['/$ROBOT_NAME/fix', '/$ROBOT_NAME/sonar/fix']\""
 
-SBG_ODOM_CMD="sleep 3; ros2 topic echo /pingdsp/heading std_msgs/msg/Float32 --field data"
+SBG_ODOM_CMD="sleep 3; ros2 topic echo /$ROBOT_NAME/heading std_msgs/msg/Float32 --field data"
+
+# Level-1 agent: relay copies nav onto smarc/*, waraps_vehicle publishes the
+# JSON sensor topics, the bridge forwards them. No behavior tree.
+WARAPS_YAML="$PKG_DIR/pingdsp_sbg/config/waraps_level1.yaml"
+RELAY_CMD="ros2 run pingdsp_sbg smarc_relay --ros-args -r __ns:=/$ROBOT_NAME"
+WARAPS_AGENT_CMD="ros2 launch wasp_bt wasp_mqtt_agent.launch robot_name:=$ROBOT_NAME agent_type:=$AGENT_TYPE pulse_rate:=$PULSE_RATE use_sim_time:=false"
+MQTT_CMD="ros2 launch str_json_mqtt_bridge waraps_bridge.launch broker_addr:=$BROKER_ADDR broker_port:=$BROKER_PORT robot_name:=$ROBOT_NAME domain:=$DOMAIN realsim:=$REALSIM context:=$CONTEXT mqtt_params_file:=$WARAPS_YAML"
 
 # Helper: run a command in a pane after sourcing the overlay.
 pane() {
@@ -227,10 +267,30 @@ pane() {
     tmux send-keys -t "$target" "$SOURCE_CMD && $cmd" C-m
 }
 
+if [[ "$ENABLE_WARAPS" == "true" ]]; then
+    if [[ ! -f "$WARAPS_YAML" ]]; then
+        echo "WARA-PS topic list not found: $WARAPS_YAML" >&2
+        exit 1
+    fi
+    # The panes source the overlay; this check uses the same prefix so a
+    # missing smarc2 build fails before tmux, instead of a half agent.
+    if ! bash -c "$SOURCE_CMD && ros2 pkg prefix wasp_bt >/dev/null 2>&1 && ros2 pkg prefix str_json_mqtt_bridge >/dev/null 2>&1"; then
+        echo "ERROR: wasp_bt or str_json_mqtt_bridge is not built or sourced." >&2
+        echo "Build smarc2 (wasp_bt, str_json_mqtt_bridge) and source the overlay," >&2
+        echo "or set ENABLE_WARAPS=false." >&2
+        exit 1
+    fi
+fi
+
 if [[ "$MODE" == "sim" ]]; then
     echo "MODE=sim: replaying '$SIM_PCAP' (speed=$PCAP_SPEED, loop=$PCAP_LOOP, sbg=$ENABLE_SBG)"
 else
     echo "MODE=real: connecting to live hardware${SONAR_HOST:+ (sonar $SONAR_HOST)}"
+fi
+if [[ "$ENABLE_WARAPS" == "true" ]]; then
+    echo "WARA-PS sensor agent: $CONTEXT/unit/$DOMAIN/$REALSIM/${USER:-nouser}_$ROBOT_NAME"
+else
+    echo "WARA-PS agent off (ENABLE_WARAPS=false)."
 fi
 
 tmux -2 new-session -d -s "$SESSION" -x 220 -y 50
@@ -278,6 +338,22 @@ if [[ "$ENABLE_SBG" == "true" ]]; then
 else
     pane "$SESSION:sbg.0" "echo 'SBG disabled (ENABLE_SBG=false)'"
     pane "$SESSION:sbg.1" "echo 'SBG disabled'"
+fi
+
+# --- Window 4/5: level-1 WARA-PS agent (relay + heartbeat) and MQTT bridge ---
+tmux new-window -t "$SESSION" -n waraps
+if [[ "$ENABLE_WARAPS" == "true" ]]; then
+    tmux split-window -h -t "$SESSION:waraps"
+    pane "$SESSION:waraps.0" "$WARAPS_AGENT_CMD"
+    pane "$SESSION:waraps.1" "$RELAY_CMD"
+else
+    pane "$SESSION:waraps" "echo 'WARA-PS agent off (ENABLE_WARAPS=false). Sim stays off unless ENABLE_WARAPS=true, and then as realsim=simulation.'"
+fi
+tmux new-window -t "$SESSION" -n mqtt
+if [[ "$ENABLE_WARAPS" == "true" ]]; then
+    pane "$SESSION:mqtt" "$MQTT_CMD"
+else
+    pane "$SESSION:mqtt" "echo 'WARA-PS MQTT bridge off (ENABLE_WARAPS=false).'"
 fi
 
 tmux set-option -t "$SESSION" mouse on

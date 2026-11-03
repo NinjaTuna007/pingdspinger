@@ -66,6 +66,9 @@
               name="sbg_to_odom_initializer" output="screen">
             <param from="$(var odom_config)"/>
             <param name="require_nav_solution" value="$(var require_nav_solution)"/>
+            <!-- TF frames are global. Keep them equal to the ROS namespace
+                 so /<name>/odom and <name>/odom cannot drift apart. -->
+            <param name="frame_prefix" value="$(var namespace)"/>
         </node>
 
         <!-- NED EKF stream -> ENU odometry + TF. -->
@@ -73,6 +76,7 @@
               name="sbg_to_odom" output="screen">
             <param from="$(var odom_config)"/>
             <param name="use_altitude" value="$(var use_altitude)"/>
+            <param name="frame_prefix" value="$(var namespace)"/>
         </node>
 
         <!-- Static vehicle -> sonar mount, so the sonar sensor frame attaches

@@ -1,0 +1,31 @@
+# Level-1 WARA-PS bridge list for the PingDSP sensor agent.
+#
+# Launch overrides mqtt.connection.host, mqtt.connection.port, and
+# mqtt.namespace (see str_json_mqtt_bridge waraps_bridge.launch). The lists
+# below are what actually get bridged. No exec/tst topics: this rig has no
+# task server, so it must not advertise direct or TST execution.
+/**:
+    ros__parameters:
+        mqtt:
+            client:
+                protocol: 4
+            connection:
+                host: localhost
+                port: 1889
+                keepalive: 30
+            namespace: "waraps/unit/surface/real/pingdsp"
+            to_mqtt:
+              [
+                "heartbeat",
+                "sensor_info",
+                "sensor/position",
+                "sensor/heading",
+                "sensor/course",
+                "sensor/speed",
+                "sensor/roll",
+                "sensor/pitch",
+              ]
+            to_ros:
+              [
+                "abort",
+              ]

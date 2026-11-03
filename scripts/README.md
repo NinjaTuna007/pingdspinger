@@ -5,7 +5,7 @@ Helpers for launching the 3DSS-DX stack, either against **live hardware** or by
 
 | File | What it does |
 |------|--------------|
-| [`pingdsp_bringup.sh`](pingdsp_bringup.sh) | Opens a `tmux` session (3 windows) with the sonar driver, Foxglove bridge, control GUI and SBG stack. The one command you normally run. |
+| [`pingdsp_bringup.sh`](pingdsp_bringup.sh) | Opens a `tmux` session with the sonar driver, Foxglove bridge, control GUI, SBG stack, and (in real mode) a level-1 WARA-PS sensor agent. The one command you normally run. |
 | [`replay_pingdsp_pcap.py`](replay_pingdsp_pcap.py) | The replay engine. Feeds a captured sonar TCP stream (+ SBG UDP) to the drivers on one clock. `pingdsp_bringup.sh` calls this for you in `sim` mode; you can also run it standalone. |
 
 ---
@@ -39,16 +39,25 @@ tmux kill-session -t pingdsp  # shut the whole stack down
 
 ## The tmux layout
 
-Three windows, each split into two panes (left = the stack, right = replayer /
-a useful topic tail):
+The sonar, viz, and sbg windows are split into panes (left = the stack, right =
+replayer / a useful topic tail). Real mode adds two more windows for the
+WARA-PS sensor agent. That agent publishes heartbeat, position, heading,
+course, and speed. It does not run a behavior tree or accept tasks.
 
 1. **sonar** — `3dss.launch` (the `tdss_driver`). In `sim` the right pane runs
-   the pcap replayer; in `real` it tails `/pingdsp/sonar/status`.
+   the pcap replayer; in `real` it tails `/<robot>/sonar/status`.
 2. **viz** — Foxglove bridge (left) + the **3DSS-DX control GUI** (right). The
    GUI's **Sidescan** tab renders the live waterfall in-app (no image topic, so
    bags stay lean) and exposes every visualisation knob as a slider.
 3. **sbg** — `sbg.launch`: the SBG driver + odom initializer + `sbg_to_odom`.
    In `sim` the real `sbg_device` ingests the replayed UDP, exactly like live.
+   SBG remains the only TF publisher (`utm_* → utm → <robot>/odom → <robot>/base_link → sonar`).
+4. **waraps** — `smarc_relay` (copies nav onto `smarc/*`) and
+   `wasp_mqtt_agent` (the level-1 JSON topics). Echoes "off" when the agent is disabled.
+5. **mqtt** — `str_json_mqtt_bridge` onto
+   `<context>/unit/<domain>/<real|simulation>/<user>_<robot>/`.
+
+From the smarc2 overlay the same script is `ros2 run smarc_bringups pingdsp_bringup.sh`.
 
 ---
 
@@ -66,6 +75,7 @@ MODE=sim PCAP_SPEED=4.0 ENABLE_GUI=false ./scripts/pingdsp_bringup.sh
 |----------|---------|-----------|---------|
 | `MODE` | `real` | both | `real` = live hardware, `sim` = replay a pcap. |
 | `SESSION` | `pingdsp` | both | tmux session name (run several at once with different names). |
+| `ROBOT_NAME` | `pingdsp` | both | ROS namespace and TF frame prefix (`/<name>/…`, `<name>/odom`, `<name>/base_link`). |
 | `SONAR_HOST` | _empty_ → `192.168.228.50` | real | Sonar/topside TCP host. |
 | `ENABLE_BAG` | `false` | real | Record `ros2 bag record -a` into `<ws>/bags`. |
 | `SIM_PCAP` | `network_dump/live_sensor.pcap` | sim | Capture to replay. `live_sensor.pcap` has sonar **and** SBG; the `asko_survey*` / other captures are **sonar-only**. |
@@ -83,6 +93,13 @@ MODE=sim PCAP_SPEED=4.0 ENABLE_GUI=false ./scripts/pingdsp_bringup.sh
 | `RECORD_SOURCE` | `raw` | both | Which cloud the recorder saves: `raw` (pristine `sonar/bathymetry`, clean offline in CloudCompare) or `filtered` (live-filtered/lossy `sonar/bathymetry_filtered`). The `pointcloud_filter` runs either way for a clean live Foxglove view. |
 | `REQUIRE_NAV_FIX` | `auto` | both | Gate the odom datum on a full GNSS fix (`solution_mode==4`). `auto` = `false` in sim (bench captures have no fix), `true` in real. |
 | `ROS_SETUP` | _empty_ | both | Extra `setup.bash` to source in every pane (optional overlay). |
+| `ENABLE_WARAPS` | `true` in real, `false` in sim | both | Level-1 WARA-PS sensor agent (heartbeat, position, heading, course, speed, roll, pitch). No behavior tree and no task execution. Sim stays off unless this is `true`, and then the unit is `simulation` rather than `real`. |
+| `CONTEXT` | `tuper` | agent | First segment of the MQTT path. |
+| `DOMAIN` | `surface` | agent | WARA-PS domain (`surface` / `subsurface` / `air`). |
+| `AGENT_TYPE` | `surface` | agent | Heartbeat `agent-type`. |
+| `PULSE_RATE` | `1.0` | agent | Heartbeat and sensor publish rate (Hz). |
+| `BROKER_ADDR` | `20.240.40.232` | agent | MQTT broker. `MQTT_BROKER_ADDR` is accepted if `BROKER_ADDR` is unset. |
+| `BROKER_PORT` | `1884` | agent | MQTT port. `MQTT_BROKER_PORT` is accepted if `BROKER_PORT` is unset. |
 
 ---
 
@@ -116,6 +133,7 @@ SESSION=live ./scripts/pingdsp_bringup.sh
 - A built + sourced workspace: `colcon build` then `source install/setup.bash`.
 - `sim` mode needs **tshark** for pcap parsing: `sudo apt install tshark`.
 - `foxglove_bridge` installed (`ros-${ROS_DISTRO}-foxglove-bridge`).
+- The WARA-PS windows need `wasp_bt` and `str_json_mqtt_bridge` from smarc2 on the same overlay. The sonar stack itself does not depend on them; set `ENABLE_WARAPS=false` to bring the rig up without the agent.
 
 ---
 

@@ -39,6 +39,7 @@ setup(
             'sbg_to_odom = pingdsp_sbg.sbg_to_odom:main',
             'sbg_to_odom_initializer = '
             'pingdsp_sbg.sbg_to_odom_initializer:main',
+            'smarc_relay = pingdsp_sbg.smarc_relay:main',
         ],
     },
 )
