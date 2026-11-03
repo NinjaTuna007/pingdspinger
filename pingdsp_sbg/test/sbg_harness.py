@@ -115,10 +115,17 @@ class RosProbe:
             self._rclpy.shutdown()
 
 
+# Monotonic acquisition time. sbg_to_odom drops a stamp that does not move
+# forward once it is publishing GNSS time.
+_NAV_STAMP_SEC = [1_700_000_000]
+
+
 def make_nav(lat, lon, solution_mode=4, altitude=0.0):
     """Build an SbgEkfNav in NED with a given solution mode."""
     from sbg_driver.msg import SbgEkfNav
     msg = SbgEkfNav()
+    msg.header.stamp.sec = _NAV_STAMP_SEC[0]
+    _NAV_STAMP_SEC[0] += 1
     msg.latitude = float(lat)
     msg.longitude = float(lon)
     msg.altitude = float(altitude)
@@ -126,6 +133,18 @@ def make_nav(lat, lon, solution_mode=4, altitude=0.0):
     msg.velocity.y = 0.0
     msg.velocity.z = 0.0
     msg.status.solution_mode = int(solution_mode)
+    return msg
+
+
+def make_utc(clock_utc_status=2):
+    """Build an SbgUtcTime with clock_utc_status set (1 or 2 unlocks odom)."""
+    from sbg_driver.msg import SbgUtcTime
+    msg = SbgUtcTime()
+    msg.clock_status.clock_utc_status = int(clock_utc_status)
+    msg.year = 2026
+    msg.month = 7
+    msg.day = 8
+    msg.hour = 12
     return msg
 
 

@@ -8,8 +8,8 @@ a datum and ``sbg_to_odom`` emits ENU odometry.
 import pytest
 
 from sbg_harness import (make_euler, make_imu, make_imu_short, make_nav,
-                         make_quat, SBG_AVAILABLE, SBG_MSGS_AVAILABLE, SbgStack,
-                         wait_until)
+                         make_quat, make_utc, SBG_AVAILABLE, SBG_MSGS_AVAILABLE,
+                         SbgStack, wait_until)
 
 pytestmark = pytest.mark.skipif(
     not (SBG_AVAILABLE and SBG_MSGS_AVAILABLE),
@@ -21,7 +21,7 @@ LAT, LON = 48.4197, -4.4721
 
 def test_odom_published_from_ned_stream():
     from nav_msgs.msg import Odometry
-    from sbg_driver.msg import SbgEkfNav, SbgEkfQuat, SbgImuData
+    from sbg_driver.msg import SbgEkfNav, SbgEkfQuat, SbgImuData, SbgUtcTime
 
     stack = SbgStack()
     stack.start_nodes(params=['publish_rate:=20.0', 'update_rate:=10.0'])
@@ -31,9 +31,11 @@ def test_odom_published_from_ned_stream():
     nav_pub = probe.publisher(SbgEkfNav, '/sbg/ekf_nav')
     quat_pub = probe.publisher(SbgEkfQuat, '/sbg/ekf_quat')
     imu_pub = probe.publisher(SbgImuData, '/sbg/imu_data')
+    utc_pub = probe.publisher(SbgUtcTime, '/sbg/utc_time')
 
     try:
         def _pump():
+            utc_pub.publish(make_utc())
             nav_pub.publish(make_nav(LAT, LON, solution_mode=4))
             quat_pub.publish(make_quat())     # identity NED attitude
             imu_pub.publish(make_imu(0.0, 0.0, 0.1))
@@ -58,7 +60,7 @@ def test_odom_published_from_ned_stream():
 def test_odom_z_tracks_altitude_by_default():
     """Default use_altitude → local ENU z = alt − datum alt."""
     from nav_msgs.msg import Odometry
-    from sbg_driver.msg import SbgEkfNav, SbgEkfQuat, SbgImuData
+    from sbg_driver.msg import SbgEkfNav, SbgEkfQuat, SbgImuData, SbgUtcTime
 
     stack = SbgStack()
     stack.start_nodes(params=['publish_rate:=20.0', 'update_rate:=10.0'])
@@ -68,9 +70,11 @@ def test_odom_z_tracks_altitude_by_default():
     nav_pub = probe.publisher(SbgEkfNav, '/sbg/ekf_nav')
     quat_pub = probe.publisher(SbgEkfQuat, '/sbg/ekf_quat')
     imu_pub = probe.publisher(SbgImuData, '/sbg/imu_data')
+    utc_pub = probe.publisher(SbgUtcTime, '/sbg/utc_time')
 
     try:
         def _pump_datum():
+            utc_pub.publish(make_utc())
             nav_pub.publish(make_nav(LAT, LON, solution_mode=4, altitude=50.0))
             quat_pub.publish(make_quat())
             imu_pub.publish(make_imu(0.0, 0.0, 0.1))
@@ -80,6 +84,7 @@ def test_odom_z_tracks_altitude_by_default():
         assert odoms[-1].pose.pose.position.z == pytest.approx(0.0, abs=0.05)
 
         def _pump_climb():
+            utc_pub.publish(make_utc())
             nav_pub.publish(make_nav(LAT, LON, solution_mode=4, altitude=53.5))
             quat_pub.publish(make_quat())
             imu_pub.publish(make_imu(0.0, 0.0, 0.1))
@@ -94,7 +99,7 @@ def test_odom_z_tracks_altitude_by_default():
 def test_odom_z_frozen_when_use_altitude_false():
     """use_altitude:=false keeps z at 0 even if EKF altitude moves."""
     from nav_msgs.msg import Odometry
-    from sbg_driver.msg import SbgEkfNav, SbgEkfQuat, SbgImuData
+    from sbg_driver.msg import SbgEkfNav, SbgEkfQuat, SbgImuData, SbgUtcTime
 
     stack = SbgStack()
     stack.start_nodes(params=[
@@ -106,9 +111,11 @@ def test_odom_z_frozen_when_use_altitude_false():
     nav_pub = probe.publisher(SbgEkfNav, '/sbg/ekf_nav')
     quat_pub = probe.publisher(SbgEkfQuat, '/sbg/ekf_quat')
     imu_pub = probe.publisher(SbgImuData, '/sbg/imu_data')
+    utc_pub = probe.publisher(SbgUtcTime, '/sbg/utc_time')
 
     try:
         def _pump():
+            utc_pub.publish(make_utc())
             nav_pub.publish(make_nav(LAT, LON, solution_mode=4, altitude=56.0))
             quat_pub.publish(make_quat())
             imu_pub.publish(make_imu(0.0, 0.0, 0.1))
@@ -118,6 +125,7 @@ def test_odom_z_frozen_when_use_altitude_false():
         assert odoms[-1].pose.pose.position.z == pytest.approx(0.0, abs=1e-9)
 
         def _pump_climb():
+            utc_pub.publish(make_utc())
             nav_pub.publish(make_nav(LAT, LON, solution_mode=4, altitude=60.0))
             quat_pub.publish(make_quat())
             imu_pub.publish(make_imu(0.0, 0.0, 0.1))
@@ -136,7 +144,7 @@ def test_odom_published_from_euler_only_stream():
     deriving orientation from EKF_EULER and gyro from IMU_SHORT.
     """
     from nav_msgs.msg import Odometry
-    from sbg_driver.msg import SbgEkfEuler, SbgEkfNav, SbgImuShort
+    from sbg_driver.msg import SbgEkfEuler, SbgEkfNav, SbgImuShort, SbgUtcTime
 
     stack = SbgStack()
     stack.start_nodes(params=['publish_rate:=20.0', 'update_rate:=10.0'])
@@ -146,9 +154,11 @@ def test_odom_published_from_euler_only_stream():
     nav_pub = probe.publisher(SbgEkfNav, '/sbg/ekf_nav')
     euler_pub = probe.publisher(SbgEkfEuler, '/sbg/ekf_euler')
     imu_pub = probe.publisher(SbgImuShort, '/sbg/imu_short')
+    utc_pub = probe.publisher(SbgUtcTime, '/sbg/utc_time')
 
     try:
         def _pump():
+            utc_pub.publish(make_utc())
             nav_pub.publish(make_nav(LAT, LON, solution_mode=4))
             euler_pub.publish(make_euler(0.0, 0.0, 0.0))  # identity NED
             imu_pub.publish(make_imu_short(0.0, 0.0, 0.1))
