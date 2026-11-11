@@ -251,7 +251,7 @@ VIEWER_CMD="ros2 run pingdsp_driver sidescan_viewer_node --ros-args -r __ns:=/$R
 # Fix anchors follow ROBOT_NAME (defaults stay /pingdsp/fix and /pingdsp/sonar/fix).
 CLICKED_CMD="ros2 run pingdsp_driver clicked_point_to_navsat --ros-args -p fix_topics:=\"['/$ROBOT_NAME/fix', '/$ROBOT_NAME/sonar/fix']\""
 
-SBG_ODOM_CMD="sleep 3; ros2 topic echo /$ROBOT_NAME/heading std_msgs/msg/Float32 --field data"
+SBG_ODOM_CMD="sleep 3; ros2 topic echo /$ROBOT_NAME/sbg/ekf_nav"   # full EKF nav: solution_mode + which aids are used (field 2026-11-11: heading alone hid an unaligned EKF)
 
 # Level-1 agent: relay copies nav onto smarc/*, waraps_vehicle publishes the
 # JSON sensor topics, the bridge forwards them. No behavior tree.
