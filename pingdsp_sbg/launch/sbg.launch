@@ -50,7 +50,11 @@
          re-mounted. See journal/memory/sound-velocity-svp.md. -->
     <arg name="sonar_roll" default="0.006981"/>
     <arg name="sonar_pitch" default="0.0"/>
-    <arg name="sonar_yaw" default="0.0"/>
+    <!-- sonar_yaw: +1.7 deg = 0.0297 rad, solved 2026-11-11 (Askö day 1) from cross-pass residuals of the three
+         harbour bags (sonar_rig scripts/swath_consistency.py): the same -1.7 deg term in all three, residual MAD
+         0.032 -> 0.027 m with +1.7, worse with -1.7; roll re-confirmed at 0.40 (sweep minimum 0.0..0.1 deg).
+         Likely the SBG dual-antenna heading alignment. Re-check on a reciprocal pair over a feature. -->
+    <arg name="sonar_yaw" default="0.0297"/>
 
     <group>
         <push-ros-namespace namespace="$(var namespace)"/>
