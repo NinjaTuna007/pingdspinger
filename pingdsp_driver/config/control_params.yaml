@@ -7,4 +7,5 @@
     sonar_host: '192.168.228.50'  # Uncomment for real sonar device
     control_port: 23840  # Control port (verified for PingDSP)
     timeout: 5.0
+    commit_timeout: 20.0   # a commit after a preset change (maxdepth / env / priority) takes > 5 s in 3DSS-DX Control
     reconnect_on_disconnect: true

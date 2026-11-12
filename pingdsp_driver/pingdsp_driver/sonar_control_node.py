@@ -43,12 +43,17 @@ class SonarControlNode(Node):
         self.declare_parameter('sonar_host', '192.168.228.50')  # PC running 3DSS-DX Control
         self.declare_parameter('control_port', 23840)  # 3DSS-DX command interface (TCP)
         self.declare_parameter('timeout', 5.0)
+        # A commit that re-applies a preset (maxdepth / env / priority) pushes range, transmit and sidescan3d to the
+        # head and 3DSS-DX Control took > 5 s to answer at Askö 2026-11-12 (three 'Command timeout' on commits that
+        # had gone through). Commits get their own, longer wait.
+        self.declare_parameter('commit_timeout', 20.0)
         self.declare_parameter('reconnect_on_disconnect', True)
         
         # Get parameters
         self.sonar_host = self.get_parameter('sonar_host').value
         self.control_port = self.get_parameter('control_port').value
         self.timeout = self.get_parameter('timeout').value
+        self.commit_timeout = self.get_parameter('commit_timeout').value
         self.reconnect_on_disconnect = self.get_parameter('reconnect_on_disconnect').value
         
         # Setup logging
@@ -253,7 +258,7 @@ class SonarControlNode(Node):
             except OSError:
                 pass
 
-    def _recv_line(self) -> bytes:
+    def _recv_line(self, timeout: Optional[float] = None) -> bytes:
         """Read until a newline and return exactly one response line.
 
         Accumulates across multiple recv() calls so a response split over
@@ -262,7 +267,7 @@ class SonarControlNode(Node):
         if the peer closes with nothing buffered. Raises socket.timeout on
         inactivity.
         """
-        deadline = time.monotonic() + self.timeout
+        deadline = time.monotonic() + (timeout or self.timeout)
         while b"\n" not in self._rx_buffer:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -279,7 +284,7 @@ class SonarControlNode(Node):
         self._rx_buffer = rest
         return line.rstrip(b"\r")
 
-    def send_command(self, command: str) -> Optional[str]:
+    def send_command(self, command: str, timeout: Optional[float] = None) -> Optional[str]:
         """
         Send an ASCII command and return the single-line response.
 
@@ -318,7 +323,7 @@ class SonarControlNode(Node):
             self.control_socket.sendall(cmd_bytes)
             self.logger.debug(f"Sent: {command}")
 
-            line = self._recv_line()
+            line = self._recv_line(timeout)
             if not line:
                 if not self.connected:
                     self.logger.warning("Connection closed by peer")
@@ -339,7 +344,7 @@ class SonarControlNode(Node):
             return response
 
         except socket.timeout:
-            self.logger.error("Command timeout")
+            self.logger.error(f"Command timeout ({timeout or self.timeout:g} s) on {command!r}")
             self.connected = False
             return None
 
@@ -804,11 +809,16 @@ class SonarControlNode(Node):
         Handle commit service request.
         Section 3.9: COMMIT command
         """
-        self.logger.info("Committing changes to sonar/file processor")
+        self.logger.info(f"Committing changes to sonar/file processor (waiting up to {self.commit_timeout:g} s)")
         cmd = "commit"
-        result = self.send_command(cmd)
+        result = self.send_command(cmd, timeout=self.commit_timeout)
         response.success, response.message = self.parse_response(result)
-        
+        if result is None:
+            # No reply is not the same as a refused commit: 3DSS-DX Control may still be pushing the settings to the
+            # head. Say so, and let the caller verify with 'get'.
+            response.message = (f"no reply from 3DSS-DX Control within {self.commit_timeout:g} s; the commit may still "
+                                "have been applied - run 'get' on transmit / acquisition / sidescan3d to confirm "
+                                "before committing again")
         return response
     
     def sonar_control_callback(self, request, response):

@@ -127,6 +127,7 @@ class SonarControlGUI:
         self.console.tag_config('response', foreground='#00695c')  # teal
         self.console.tag_config('success', foreground='#2e7d32')   # green
         self.console.tag_config('error', foreground='#c62828')     # red
+        self.console.tag_config('warning', foreground='#e65100')   # orange: preset / commit caveats
         self.console.tag_config('info', foreground='#333333')      # default
         if _bold is not None:
             for _t in ('command', 'success', 'error'):
@@ -180,7 +181,7 @@ class SonarControlGUI:
     # Direction markers: sent commands get an arrow out, received lines an
     # arrow in, status lines a tick/cross. Reads like a transcript.
     _LOG_MARKERS = {'command': '\u2192 ', 'response': '\u2190 ',
-                    'success': '\u2713 ', 'error': '\u2717 ', 'info': '  '}
+                    'success': '\u2713 ', 'error': '\u2717 ', 'warning': '! ', 'info': '  '}
 
     def _insert_line(self, timestamp, body, tag):
         """Write one already-classified line to the console widget."""
@@ -329,12 +330,32 @@ class SonarControlGUI:
                                      values=["bathymetry", "widearea", "highres"], state="readonly", width=12)
         priority_combo.grid(row=2, column=3, pady=5, padx=5)
         
-        # Buttons
+        # Buttons. Two kinds of "set": range / duty / trigger are plain parameters; max depth / environment /
+        # priority are 3DSS-DX Control's Simple-GUI PRESETS and rewrite other tabs (see the note below).
         btn_frame = ttk.Frame(settings_frame)
         btn_frame.grid(row=3, column=0, columnspan=4, pady=10)
         ttk.Button(btn_frame, text="Get Settings", command=lambda: self.acquisition_settings("get")).pack(side="left", padx=5)
-        ttk.Button(btn_frame, text="Set Settings", command=lambda: self.acquisition_settings("set")).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Set range / duty / trigger",
+                   command=lambda: self.acquisition_settings("set", preset=False)).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Apply preset (max depth + env + priority)",
+                   command=lambda: self.acquisition_settings("set", preset=True)).pack(side="left", padx=5)
         ttk.Button(btn_frame, text="Commit", command=self.commit_settings, style="Accent.TButton").pack(side="left", padx=5)
+
+        note = ttk.LabelFrame(tab, text="What the preset fields push (3DSS-DX Sonar Manual 2.3 p. 71-72, Command Guide 1.4 s. 3.8)", padding=8)
+        note.pack(fill="x", padx=10, pady=5)
+        ttk.Label(note, justify="left", wraplength=760, text=(
+            "MAX DEPTH, ENVIRONMENT and PRIORITY are not independent parameters: they are the presets of 3DSS-DX "
+            "Control's simple GUI, and sending them makes 3DSS-DX Control recompute other settings at the next commit:\n"
+            "  - PRIORITY rewrites the RANGE, the whole TRANSMIT tab (pulse, power, beamwidth, tilt) and the SIDESCAN3D tab.\n"
+            "  - MAX DEPTH sets the RANGE from the vendor table below, according to the priority.\n"
+            "  - ENVIRONMENT sets the Sidescan3D angle count: simple = 3, complex = 4 (complex = vertical structure / water column).\n"
+            "'Apply preset' sends all six fields, then re-reads Acquisition, Transmit and Sidescan3D so you see what changed. "
+            "If you want your own transmit settings: apply the preset FIRST, set Transmit / Sidescan3D afterwards, then one Commit.\n"
+            "Range by max depth [m]:  bathymetry  3:20  5:25  7.5:37  10:50  15:75  25:100  35:125  50:125  75:125   |   "
+            "widearea  3:37  5:50  7.5:75  10:100  15:125  25:150  35:150  50:150  75:200   |   "
+            "highres  3:15  5:20  7.5:25  10:37  15:50  25:75  35:100  50:125  75:125\n"
+            "Pulse limits: bb80 needs range >= 50 m, bb200 needs range >= 75 m (a commit with a shorter range is refused)."
+        )).pack(anchor="w")
     
     def create_transmit_tab(self):
         """Create transmit settings tab"""
@@ -1014,10 +1035,15 @@ class SonarControlGUI:
             self.status_var.set(f"Failed: {msg}")
             self.log(f"✗ FAILED: {msg}")
     
-    def acquisition_settings(self, command):
-        """Call acquisition settings service"""
+    def acquisition_settings(self, command, preset=True):
+        """Call acquisition settings service.
+
+        preset=False sends only range / dutycycle / trigger (maxdepth 0 and empty env / priority are skipped by the
+        control node), so the 3DSS-DX Control presets are left alone and the Transmit / Sidescan3D tabs survive the
+        commit. preset=True sends all six and then re-reads the three tabs the preset rewrites.
+        """
         self.status_var.set(f"Acquisition: {command}...")
-        self.log(f"Calling sonar/acquisition with command={command}")
+        self.log(f"Calling sonar/acquisition with command={command}" + ("" if command != "set" else (" (preset: max depth + env + priority)" if preset else " (range / duty / trigger only)")))
         self.window.update()
         
         client = self.node.create_client(AcquisitionSettings, 'sonar/acquisition')
@@ -1031,9 +1057,14 @@ class SonarControlGUI:
             req.range = int(self.acq_range_var.get())
             req.dutycycle = int(self.acq_duty_var.get())
             req.trigger = self.acq_trigger_var.get()
-            req.maxdepth = float(self.acq_maxdepth_var.get())
-            req.env = self.acq_env_var.get()
-            req.priority = self.acq_priority_var.get()
+            if preset:
+                req.maxdepth = float(self.acq_maxdepth_var.get())
+                req.env = self.acq_env_var.get()
+                req.priority = self.acq_priority_var.get()
+            else:
+                req.maxdepth = 0.0
+                req.env = ""
+                req.priority = ""
         
         future = client.call_async(req)
         self._await_future(future, timeout_sec=5.0)
@@ -1046,6 +1077,13 @@ class SonarControlGUI:
             # Parse and update GUI values for get command
             if command == "get":
                 self._parse_acquisition_response(future.result().message)
+            elif preset:
+                self.log("  PRESET SENT: 3DSS-DX Control now recomputes range, transmit and sidescan3d; re-reading those tabs "
+                         "(the new values apply at the next commit; set Transmit / Sidescan3D again AFTER this if you want your own)",
+                         level="warning")
+                self.acquisition_settings("get")
+                self.transmit_settings("get")
+                self.sidescan3d_settings("get")
         else:
             msg = future.result().message if future.result() else "No response"
             self.status_var.set(f"Failed: {msg}")
@@ -1475,16 +1513,25 @@ class SonarControlGUI:
         
         req = CommitSettings.Request()
         future = client.call_async(req)
-        self._await_future(future, timeout_sec=5.0)
+        # The control node waits commit_timeout (20 s default) for 3DSS-DX Control: a commit that re-applies a
+        # preset takes longer than the 5 s plain commands get. Wait a little longer than the node does.
+        self._await_future(future, timeout_sec=25.0)
         
         if future.result() and future.result().success:
             self.status_var.set("Settings committed successfully")
             self.log("✓ SUCCESS: Settings committed")
             self.log(f"  Response: {future.result().message}")
         else:
-            msg = future.result().message if future.result() else "No response"
-            self.status_var.set(f"Commit failed: {msg}")
-            self.log(f"✗ FAILED: {msg}")
+            msg = future.result().message if future.result() else "No response from the control node within 25 s"
+            self.status_var.set(f"Commit: {msg}")
+            self.log(f"✗ COMMIT NOT CONFIRMED: {msg}")
+            if "no reply" in msg or "No response" in msg:
+                self.log("  A missing reply is not a refused commit: 3DSS-DX Control may still be applying it. "
+                         "Re-reading Acquisition / Transmit / Sidescan3D - compare with what you set before committing again.",
+                         level="warning")
+                self.acquisition_settings("get")
+                self.transmit_settings("get")
+                self.sidescan3d_settings("get")
     
     def file_control(self, command):
         """Call file control service"""
